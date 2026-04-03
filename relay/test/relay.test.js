@@ -33,7 +33,46 @@ test("health endpoint reports available routes", async () => {
   const body = await response.json();
   assert.equal(body.ok, true);
   assert.equal(body.mock_mode, true);
+  assert.ok(body.routes.includes("POST /api/armoriq/verify"));
   assert.ok(body.routes.includes("POST /api/gemini/terminal-validator"));
+});
+
+test("armoriq verify endpoint allows matching terminal input in mock mode", async () => {
+  const response = await fetch(`${baseUrl}/api/armoriq/verify`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      player_input: "run containment override",
+      action: "terminal_override",
+      context: {
+        hidden_answer: "containment override"
+      }
+    })
+  });
+
+  assert.equal(response.status, 200);
+  const body = await response.json();
+  assert.equal(body.allowed, true);
+  assert.equal(body.block_reason, null);
+});
+
+test("armoriq verify endpoint blocks non-matching terminal input in mock mode", async () => {
+  const response = await fetch(`${baseUrl}/api/armoriq/verify`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      player_input: "open hangar bay",
+      action: "terminal_override",
+      context: {
+        hidden_answer: "containment override"
+      }
+    })
+  });
+
+  assert.equal(response.status, 200);
+  const body = await response.json();
+  assert.equal(body.allowed, false);
+  assert.match(body.block_reason, /policy/i);
 });
 
 test("clue generator endpoint returns the required JSON contract", async () => {
@@ -105,4 +144,19 @@ test("terminal validator rejects malformed requests", async () => {
   assert.equal(response.status, 400);
   const body = await response.json();
   assert.match(body.error, /hidden_answer|player_input/);
+});
+
+test("armoriq verify rejects malformed requests", async () => {
+  const response = await fetch(`${baseUrl}/api/armoriq/verify`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      player_input: "run containment override",
+      context: {}
+    })
+  });
+
+  assert.equal(response.status, 400);
+  const body = await response.json();
+  assert.match(body.error, /action|context\.hidden_answer/);
 });

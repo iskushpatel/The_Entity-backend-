@@ -1,4 +1,5 @@
 const http = require("node:http");
+const { loadLocalEnv } = require("./env");
 const {
   buildClueGeneratorPrompt,
   buildTerminalValidatorPrompt,
@@ -8,18 +9,32 @@ const {
   villainSpeechSchema
 } = require("./prompts");
 const {
+  buildMockArmorIqResponse,
   buildMockClueResponse,
   buildMockValidatorResponse,
   buildMockVillainResponse,
+  callArmorIqVerify,
   callGeminiJson,
   synthesizeWithElevenLabs
 } = require("./clients");
+
+loadLocalEnv();
 
 function createConfigFromEnv(overrides = {}) {
   return {
     host: overrides.host ?? process.env.RELAY_HOST ?? "127.0.0.1",
     port: Number(overrides.port ?? process.env.RELAY_PORT ?? 8787),
     mockMode: coerceBoolean(overrides.mockMode ?? process.env.MOCK_MODE ?? false),
+    armorIqVerifyUrl: overrides.armorIqVerifyUrl ?? process.env.ARMORIQ_VERIFY_URL ?? "",
+    armorIqUpstreamVerifyUrl:
+      overrides.armorIqUpstreamVerifyUrl ?? process.env.ARMORIQ_UPSTREAM_VERIFY_URL ?? "",
+    armorIqTokenIssueUrl:
+      overrides.armorIqTokenIssueUrl ?? process.env.ARMORIQ_TOKEN_ISSUE_URL ?? "",
+    armorIqApiKeyHeader:
+      overrides.armorIqApiKeyHeader ?? process.env.ARMORIQ_API_KEY_HEADER ?? "x-api-key",
+    armorIqApiKey: overrides.armorIqApiKey ?? process.env.ARMORIQ_API_KEY ?? "",
+    armorIqUserId: overrides.armorIqUserId ?? process.env.ARMORIQ_USER_ID ?? "",
+    armorIqAgentId: overrides.armorIqAgentId ?? process.env.ARMORIQ_AGENT_ID ?? "",
     geminiApiKey: overrides.geminiApiKey ?? process.env.GEMINI_API_KEY ?? "",
     geminiClueModel: overrides.geminiClueModel || process.env.GEMINI_CLUE_MODEL || "gemini-2.5-flash",
     geminiValidatorModel:
@@ -41,11 +56,33 @@ function createServer(config = createConfigFromEnv()) {
           ok: true,
           mock_mode: config.mockMode,
           routes: [
+            "POST /api/armoriq/verify",
             "POST /api/gemini/clue-generator",
             "POST /api/gemini/terminal-validator",
             "POST /api/villain/speech"
           ]
         });
+      }
+
+      if (req.method === "POST" && req.url === "/api/armoriq/verify") {
+        const body = await readJsonBody(req);
+        requireString(body.player_input, "player_input");
+        requireString(body.action, "action");
+        requireString(body?.context?.hidden_answer, "context.hidden_answer");
+
+        const result = await callArmorIqVerify({
+          apiKey: config.armorIqApiKey,
+          apiKeyHeader: config.armorIqApiKeyHeader,
+          verifyUrl: resolveArmorIqUpstreamUrl(config, req),
+          tokenIssueUrl: resolveArmorIqTokenIssueUrl(config, req),
+          userId: config.armorIqUserId,
+          agentId: config.armorIqAgentId,
+          payload: body,
+          mockMode: config.mockMode,
+          mockValue: buildMockArmorIqResponse(body)
+        });
+
+        return sendJson(res, 200, result);
       }
 
       if (req.method === "POST" && req.url === "/api/gemini/clue-generator") {
@@ -195,6 +232,46 @@ function pickSpeechCue(speechCues, selectedCueId) {
   }
 
   return speechCues.find((cue) => cue.cue_id === selectedCueId) || speechCues[0];
+}
+
+function resolveArmorIqUpstreamUrl(config, req) {
+  const upstreamUrl = config.armorIqUpstreamVerifyUrl || config.armorIqVerifyUrl;
+  if (!upstreamUrl) {
+    return upstreamUrl;
+  }
+
+  const localUrl = `http://${req.headers.host}${req.url}`;
+  if (normalizeUrl(upstreamUrl) === normalizeUrl(localUrl)) {
+    throw withStatus(
+      new Error(
+        "ARMORIQ_UPSTREAM_VERIFY_URL must point to the real ArmorIQ service, not this relay endpoint"
+      ),
+      500
+    );
+  }
+
+  return upstreamUrl;
+}
+
+function resolveArmorIqTokenIssueUrl(config, req) {
+  const tokenIssueUrl = config.armorIqTokenIssueUrl;
+  if (!tokenIssueUrl) {
+    return "";
+  }
+
+  const localUrl = `http://${req.headers.host}${req.url}`;
+  if (normalizeUrl(tokenIssueUrl) === normalizeUrl(localUrl)) {
+    throw withStatus(
+      new Error("ARMORIQ_TOKEN_ISSUE_URL must not point to this relay endpoint"),
+      500
+    );
+  }
+
+  return tokenIssueUrl;
+}
+
+function normalizeUrl(value) {
+  return String(value || "").trim().replace(/\/+$/, "").toLowerCase();
 }
 
 if (require.main === module) {

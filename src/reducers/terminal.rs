@@ -4,9 +4,9 @@ use crate::api::http_wrappers::{extract_gemini_text, queue_gemini_validator, ver
 use crate::models::api_schemas::{ArmorIqResponse, GeminiValidatorDecision};
 use crate::tables::state::{
     armoriq_callback_schedule, game_secret, game_state, gemini_validator_callback_schedule,
-    terminal_request, ArmoriqCallbackSchedule, GameSecret, GameState,
-    GeminiValidatorCallbackSchedule, TerminalRequest, TerminalRequestPhase, TerminalStatus,
-    DEFAULT_GAME_ID,
+    server_config, terminal_request, ArmoriqCallbackSchedule, GameSecret, GameState,
+    GeminiValidatorCallbackSchedule, ServerConfig, TerminalRequest, TerminalRequestPhase,
+    TerminalStatus, ACTIVE_SERVER_CONFIG_KEY, DEFAULT_GAME_ID,
 };
 
 /// Trigger reducer for Player 1 terminal submissions.
@@ -69,6 +69,100 @@ pub fn submit_terminal(ctx: &ReducerContext, input: String) -> Result<(), String
     ctx.db.game_state().game_id().update(game_state);
 
     verify_with_armoriq(ctx, request.request_id, normalized_input, hidden_answer)
+}
+
+/// Stores or updates the hidden terminal answer for the default game session.
+#[spacetimedb::reducer]
+pub fn set_hidden_answer(ctx: &ReducerContext, hidden_answer: String) -> Result<(), String> {
+    let normalized = hidden_answer.trim().to_string();
+    if normalized.is_empty() {
+        return Err("hidden_answer must not be empty".to_string());
+    }
+
+    upsert_hidden_answer(ctx, normalized);
+    Ok(())
+}
+
+/// Stores or updates the external integration settings used by ArmorIQ and Gemini flows.
+#[spacetimedb::reducer]
+#[allow(clippy::too_many_arguments)]
+pub fn configure_integrations(
+    ctx: &ReducerContext,
+    armoriq_verify_url: String,
+    armoriq_api_key_header: String,
+    armoriq_api_key: String,
+    local_llm_relay_base_url: Option<String>,
+    gemini_api_base_url: String,
+    gemini_api_key: String,
+    gemini_validator_model: String,
+    gemini_clue_generator_model: String,
+    gemini_villain_model: String,
+) -> Result<(), String> {
+    let verify_url = require_trimmed("armoriq_verify_url", armoriq_verify_url)?;
+    let api_key_header = require_trimmed("armoriq_api_key_header", armoriq_api_key_header)?;
+    let api_key = require_trimmed("armoriq_api_key", armoriq_api_key)?;
+    let validator_model = require_trimmed("gemini_validator_model", gemini_validator_model)?;
+    let clue_model = require_trimmed("gemini_clue_generator_model", gemini_clue_generator_model)?;
+    let villain_model = require_trimmed("gemini_villain_model", gemini_villain_model)?;
+
+    let relay_base_url = normalize_optional(local_llm_relay_base_url);
+    let gemini_base = if relay_base_url.is_some() {
+        normalize_optional(Some(gemini_api_base_url)).unwrap_or_default()
+    } else {
+        require_trimmed("gemini_api_base_url", gemini_api_base_url)?
+    };
+    let gemini_key = if relay_base_url.is_some() {
+        normalize_optional(Some(gemini_api_key)).unwrap_or_default()
+    } else {
+        require_trimmed("gemini_api_key", gemini_api_key)?
+    };
+
+    upsert_server_config(
+        ctx,
+        ServerConfig {
+            config_key: ACTIVE_SERVER_CONFIG_KEY,
+            armoriq_verify_url: verify_url,
+            armoriq_api_key_header: api_key_header,
+            armoriq_api_key: api_key,
+            local_llm_relay_base_url: relay_base_url,
+            gemini_api_base_url: gemini_base,
+            gemini_api_key: gemini_key,
+            gemini_validator_model: validator_model,
+            gemini_clue_generator_model: clue_model,
+            gemini_villain_model: villain_model,
+        },
+    );
+
+    Ok(())
+}
+
+/// Convenience reducer for a local relay-backed development setup.
+#[spacetimedb::reducer]
+pub fn configure_local_dev_integrations(
+    ctx: &ReducerContext,
+    relay_base_url: String,
+    armoriq_api_key: String,
+) -> Result<(), String> {
+    let relay_base = require_trimmed("relay_base_url", relay_base_url)?;
+    let api_key = normalize_dev_api_key(armoriq_api_key);
+
+    upsert_server_config(
+        ctx,
+        ServerConfig {
+            config_key: ACTIVE_SERVER_CONFIG_KEY,
+            armoriq_verify_url: format!("{}/api/armoriq/verify", relay_base.trim_end_matches('/')),
+            armoriq_api_key_header: "x-api-key".to_string(),
+            armoriq_api_key: api_key,
+            local_llm_relay_base_url: Some(relay_base),
+            gemini_api_base_url: String::new(),
+            gemini_api_key: String::new(),
+            gemini_validator_model: "gemini-2.5-flash".to_string(),
+            gemini_clue_generator_model: "gemini-2.5-flash".to_string(),
+            gemini_villain_model: "gemini-2.5-flash".to_string(),
+        },
+    );
+
+    Ok(())
 }
 
 /// Scheduled reducer that consumes the persisted ArmorIQ HTTP result.
@@ -461,6 +555,10 @@ fn clear_state_for_unknown_request(ctx: &ReducerContext, request_id: u64, messag
 
 #[allow(dead_code)]
 fn _store_hidden_answer(ctx: &ReducerContext, hidden_answer: String) {
+    upsert_hidden_answer(ctx, hidden_answer);
+}
+
+fn upsert_hidden_answer(ctx: &ReducerContext, hidden_answer: String) {
     let row = GameSecret {
         game_id: DEFAULT_GAME_ID,
         hidden_answer,
@@ -471,5 +569,42 @@ fn _store_hidden_answer(ctx: &ReducerContext, hidden_answer: String) {
         ctx.db.game_secret().game_id().update(row);
     } else {
         ctx.db.game_secret().insert(row);
+    }
+}
+
+fn upsert_server_config(ctx: &ReducerContext, config: ServerConfig) {
+    if ctx
+        .db
+        .server_config()
+        .config_key()
+        .find(ACTIVE_SERVER_CONFIG_KEY)
+        .is_some()
+    {
+        ctx.db.server_config().config_key().update(config);
+    } else {
+        ctx.db.server_config().insert(config);
+    }
+}
+
+fn require_trimmed(label: &str, value: String) -> Result<String, String> {
+    let normalized = value.trim().to_string();
+    if normalized.is_empty() {
+        return Err(format!("{label} must not be empty"));
+    }
+    Ok(normalized)
+}
+
+fn normalize_optional(value: Option<String>) -> Option<String> {
+    value
+        .map(|inner| inner.trim().to_string())
+        .filter(|inner| !inner.is_empty())
+}
+
+fn normalize_dev_api_key(value: String) -> String {
+    let normalized = value.trim().to_string();
+    if normalized.is_empty() {
+        "mock-armoriq-key".to_string()
+    } else {
+        normalized
     }
 }
