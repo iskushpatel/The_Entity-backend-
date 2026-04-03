@@ -1,0 +1,9 @@
+{
+  "name": "the-entity-backend",
+  "private": true,
+  "type": "commonjs",
+  "scripts": {
+    "relay:start": "node relay/server.js",
+    "relay:test": "node --test relay/test/relay.test.js"
+  }
+}

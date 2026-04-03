@@ -36,6 +36,12 @@
 *.exe
 *.out
 *.app
+target/
 
 # debug information files
 *.dwo
+
+# Node relay
+node_modules/
+.env
+.env.local
