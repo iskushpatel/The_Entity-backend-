@@ -1,6 +1,26 @@
 const GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta";
 const ELEVENLABS_API_BASE = "https://api.elevenlabs.io/v1";
 
+function buildMockArmorIqResponse(input = {}) {
+  const playerInput = normalizeLoose(input.player_input);
+  const hiddenAnswer = normalizeLoose(input?.context?.hidden_answer);
+  const matches =
+    playerInput === hiddenAnswer ||
+    (hiddenAnswer && playerInput.includes(hiddenAnswer));
+
+  if (matches) {
+    return {
+      allowed: true,
+      block_reason: null
+    };
+  }
+
+  return {
+    allowed: false,
+    block_reason: "Input does not satisfy the terminal override policy."
+  };
+}
+
 function buildMockClueResponse(input = {}) {
   const villainName = input.villainName || input.villain_name || "The Entity";
 
@@ -344,6 +364,179 @@ async function callGeminiJson({
   return JSON.parse(candidateText);
 }
 
+async function callArmorIqVerify({
+  apiKey,
+  apiKeyHeader = "x-api-key",
+  verifyUrl,
+  tokenIssueUrl,
+  userId,
+  agentId,
+  payload,
+  mockMode,
+  mockValue,
+  timeoutMs = 10000
+}) {
+  if (mockMode) {
+    return mockValue;
+  }
+
+  if (!verifyUrl) {
+    throw new Error("ARMORIQ_VERIFY_URL is missing");
+  }
+
+  if (!apiKey) {
+    throw new Error("ARMORIQ_API_KEY is missing");
+  }
+
+  if (!apiKeyHeader) {
+    throw new Error("ARMORIQ_API_KEY_HEADER is missing");
+  }
+
+  const issued = await issueArmorIqToken({
+    apiKey,
+    apiKeyHeader,
+    tokenIssueUrl: tokenIssueUrl || deriveArmorIqTokenIssueUrl(verifyUrl),
+    payload,
+    userId,
+    agentId,
+    timeoutMs
+  });
+
+  return {
+    allowed: true,
+    block_reason: null,
+    intent_reference: issued.envelope.intent_reference || issued.token.tokenId || null,
+    expires_at: issued.envelope.expires_at || null,
+    provider: "armoriq"
+  };
+}
+
+async function issueArmorIqToken({
+  apiKey,
+  apiKeyHeader,
+  tokenIssueUrl,
+  payload,
+  userId,
+  agentId,
+  timeoutMs
+}) {
+  if (!tokenIssueUrl) {
+    throw new Error("ARMORIQ token issue URL is missing");
+  }
+
+  const response = await fetch(tokenIssueUrl, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      [apiKeyHeader]: apiKey
+    },
+    body: JSON.stringify(buildArmorIqTokenIssuePayload(payload, userId, agentId)),
+    signal: AbortSignal.timeout(timeoutMs)
+  });
+
+  const rawText = await response.text();
+  if (!response.ok) {
+    throw new Error(`ArmorIQ token issue failed with HTTP ${response.status}: ${rawText}`);
+  }
+
+  let envelope;
+  try {
+    envelope = JSON.parse(rawText);
+  } catch (error) {
+    throw new Error(`ArmorIQ token issue returned invalid JSON: ${error.message}`);
+  }
+
+  if (envelope?.success === false) {
+    throw new Error(
+      envelope?.message || envelope?.error || "ArmorIQ token issue request was rejected"
+    );
+  }
+
+  const token = extractArmorIqToken(envelope);
+  if (!token) {
+    throw new Error("ArmorIQ token issue response did not include a token");
+  }
+
+  return {
+    token,
+    envelope
+  };
+}
+
+function deriveArmorIqTokenIssueUrl(verifyUrl) {
+  const url = new URL(verifyUrl);
+  url.pathname = "/token/issue";
+  url.search = "";
+  url.hash = "";
+  return url.toString();
+}
+
+function buildArmorIqTokenIssuePayload(payload, userId, agentId) {
+  return {
+    user_id: userId || "the-entity-local-user",
+    agent_id: agentId || "the-entity-relay",
+    action: payload?.action || "terminal_override",
+    plan: {
+      goal: "Authorize a terminal override validation request",
+      steps: [
+        {
+          action: payload?.action || "terminal_override",
+          mcp: "the-entity-terminal",
+          params: {
+            player_input: payload?.player_input || "",
+            hidden_answer: payload?.context?.hidden_answer || ""
+          }
+        }
+      ]
+    },
+    policy: {
+      allow: ["*"],
+      deny: []
+    }
+  };
+}
+
+function extractArmorIqToken(envelope) {
+  const candidates = [
+    envelope?.token,
+    envelope?.access_token,
+    envelope?.intent_token,
+    envelope?.bearer_token,
+    envelope?.jwt,
+    envelope?.data?.token,
+    envelope?.data?.access_token,
+    envelope?.data?.intent_token,
+    envelope?.result?.token,
+    envelope?.result?.access_token,
+    envelope?.result?.intent_token
+  ];
+
+  for (const candidate of candidates) {
+    if (typeof candidate === "string" && candidate.trim()) {
+      return candidate.trim();
+    }
+
+    if (candidate && typeof candidate === "object") {
+      const tokenId =
+        candidate.intent_reference || candidate.tokenId || envelope?.intent_reference;
+      const signature = candidate.signature;
+      const planHash = candidate.plan_hash || candidate.planHash || envelope?.plan_hash;
+      const stepProofs = envelope?.step_proofs || candidate.step_proofs;
+
+      if (signature && planHash && Array.isArray(stepProofs)) {
+        return JSON.stringify({
+          tokenId: tokenId || null,
+          planHash,
+          signature,
+          stepProofs
+        });
+      }
+    }
+  }
+
+  return null;
+}
+
 async function synthesizeWithElevenLabs({
   apiKey,
   voiceId,
@@ -403,9 +596,11 @@ function normalizeLoose(value) {
 }
 
 module.exports = {
+  buildMockArmorIqResponse,
   buildMockClueResponse,
   buildMockValidatorResponse,
   buildMockVillainResponse,
+  callArmorIqVerify,
   callGeminiJson,
   synthesizeWithElevenLabs
 };

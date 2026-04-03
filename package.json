@@ -4,6 +4,12 @@
   "type": "commonjs",
   "scripts": {
     "relay:start": "node relay/server.js",
-    "relay:test": "node --test relay/test/relay.test.js"
+    "relay:test": "node --test relay/test/relay.test.js",
+    "relay:smoke:gemini": "node relay/smoke-live.js gemini",
+    "relay:smoke:armoriq": "node relay/smoke-live.js armoriq",
+    "relay:smoke:live": "node relay/smoke-live.js all"
+  },
+  "dependencies": {
+    "@armoriq/sdk": "^0.2.10"
   }
 }
