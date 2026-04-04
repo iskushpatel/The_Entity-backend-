@@ -141,11 +141,7 @@ async function callGeminiJson({
         responseJsonSchema,
         temperature,
         candidateCount: 1,
-        maxOutputTokens,
-        thinkingConfig: {
-          thinkingBudget: 0,
-          includeThoughts: false
-        }
+        maxOutputTokens
       }
     }),
     signal: AbortSignal.timeout(timeoutMs)

@@ -6,7 +6,7 @@ use spacetimedb::{log, ProcedureContext, ReducerContext, Table};
 use crate::api::http_wrappers::extract_gemini_text;
 use crate::models::api_schemas::{
     GeminiContent, GeminiGenerateContentRequest, GeminiGenerationConfig, GeminiPart,
-    GeminiThinkingConfig, VillainSpeechGenerationPayload,
+    VillainSpeechGenerationPayload,
 };
 use crate::tables::state::{
     round_generation_callback_schedule, round_generation_request,
@@ -85,137 +85,26 @@ pub fn default_round_response_schema(round_key: &str) -> Result<Value, String> {
                 },
                 "clues": {
                     "type": "array",
-                    "minItems": 6,
-                    "maxItems": 6,
-                    "items": {
-                        "type": "object",
-                        "additionalProperties": false,
-                        "properties": {
-                            "clue_id": { "type": "string" },
-                            "clue_type": { "type": "string" },
-                            "clue_text": { "type": "string" },
-                            "required_manual_refs": {
-                                "type": "array",
-                                "minItems": 1,
-                                "items": { "type": "string" }
-                            },
-                            "expected_inference": { "type": "string" },
-                            "difficulty": { "type": "string" }
-                        },
-                        "required": ["clue_id", "clue_type", "clue_text", "required_manual_refs", "expected_inference", "difficulty"]
-                    }
+                    "minItems": 2,
+                    "maxItems": 2,
+                    "items": { "type": "object", "additionalProperties": true }
                 },
                 "manual": {
                     "type": "object",
                     "additionalProperties": false,
                     "properties": {
-                        "codex_entries": {
-                            "type": "array",
-                            "minItems": 8,
-                            "maxItems": 10,
-                            "items": {
-                                "type": "object",
-                                "additionalProperties": false,
-                                "properties": {
-                                    "entry_id": { "type": "string" },
-                                    "domain": { "type": "string" },
-                                    "term": { "type": "string" },
-                                    "description": { "type": "string" },
-                                    "relevance_tags": {
-                                        "type": "array",
-                                        "minItems": 1,
-                                        "items": { "type": "string" }
-                                    }
-                                },
-                                "required": ["entry_id", "domain", "term", "description", "relevance_tags"]
-                            }
-                        },
-                        "timeline_fragments": {
-                            "type": "array",
-                            "minItems": 6,
-                            "maxItems": 8,
-                            "items": {
-                                "type": "object",
-                                "additionalProperties": false,
-                                "properties": {
-                                    "fragment_id": { "type": "string" },
-                                    "timestamp_hint": { "type": "string" },
-                                    "event_summary": { "type": "string" },
-                                    "reliability": { "type": "string" },
-                                    "linked_entities": {
-                                        "type": "array",
-                                        "minItems": 1,
-                                        "items": { "type": "string" }
-                                    }
-                                },
-                                "required": ["fragment_id", "timestamp_hint", "event_summary", "reliability", "linked_entities"]
-                            }
-                        },
-                        "cipher_legend": {
-                            "type": "array",
-                            "minItems": 5,
-                            "maxItems": 7,
-                            "items": {
-                                "type": "object",
-                                "additionalProperties": false,
-                                "properties": {
-                                    "cipher_id": { "type": "string" },
-                                    "symbol_or_pattern": { "type": "string" },
-                                    "decoding_rule": { "type": "string" },
-                                    "example": { "type": "string" }
-                                },
-                                "required": ["cipher_id", "symbol_or_pattern", "decoding_rule", "example"]
-                            }
-                        },
-                        "protocol_matrix": {
-                            "type": "array",
-                            "minItems": 6,
-                            "maxItems": 8,
-                            "items": {
-                                "type": "object",
-                                "additionalProperties": false,
-                                "properties": {
-                                    "protocol_id": { "type": "string" },
-                                    "trigger_condition": { "type": "string" },
-                                    "prescribed_action": { "type": "string" },
-                                    "hidden_implication": { "type": "string" }
-                                },
-                                "required": ["protocol_id", "trigger_condition", "prescribed_action", "hidden_implication"]
-                            }
-                        },
-                        "false_leads": {
-                            "type": "array",
-                            "minItems": 2,
-                            "maxItems": 3,
-                            "items": {
-                                "type": "object",
-                                "additionalProperties": false,
-                                "properties": {
-                                    "lead_id": { "type": "string" },
-                                    "misleading_claim": { "type": "string" },
-                                    "why_it_looks_valid": { "type": "string" },
-                                    "why_it_is_wrong": { "type": "string" }
-                                },
-                                "required": ["lead_id", "misleading_claim", "why_it_looks_valid", "why_it_is_wrong"]
-                            }
-                        }
+                        "codex_entries": { "type": "array", "minItems": 1, "maxItems": 1, "items": { "type": "object", "additionalProperties": true } },
+                        "timeline_fragments": { "type": "array", "minItems": 1, "maxItems": 1, "items": { "type": "object", "additionalProperties": true } },
+                        "cipher_legend": { "type": "array", "minItems": 1, "maxItems": 1, "items": { "type": "object", "additionalProperties": true } },
+                        "protocol_matrix": { "type": "array", "minItems": 1, "maxItems": 1, "items": { "type": "object", "additionalProperties": true } },
+                        "false_leads": { "type": "array", "minItems": 1, "maxItems": 1, "items": { "type": "object", "additionalProperties": true } }
                     },
                     "required": ["codex_entries", "timeline_fragments", "cipher_legend", "protocol_matrix", "false_leads"]
                 },
                 "decoder_walkthrough": {
                     "type": "array",
-                    "minItems": 4,
-                    "items": {
-                        "type": "object",
-                        "additionalProperties": false,
-                        "properties": {
-                            "step_id": { "type": "string" },
-                            "clue_id": { "type": "string" },
-                            "manual_refs_used": { "type": "array", "minItems": 1, "items": { "type": "string" } },
-                            "deduction": { "type": "string" }
-                        },
-                        "required": ["step_id", "clue_id", "manual_refs_used", "deduction"]
-                    }
+                    "minItems": 1,
+                    "items": { "type": "object", "additionalProperties": true }
                 },
                 "solution": {
                     "type": "object",
@@ -493,9 +382,6 @@ fn build_round_content_http_request(
         &config.gemini_clue_generator_model,
     )?;
 
-    let response_schema: Value = serde_json::from_str(&request.response_schema_json)
-        .map_err(|err| format!("invalid round response schema JSON: {err}"))?;
-
     let prompt = build_round_generation_prompt(&request.round_key, &request.request_payload_json)?;
 
     build_gemini_request(
@@ -503,7 +389,7 @@ fn build_round_content_http_request(
         &config.gemini_api_key,
         &config.gemini_clue_generator_model,
         prompt,
-        response_schema,
+        None,
         round_generation_temperature(&request.round_key),
         round_generation_max_output_tokens(&request.round_key),
     )
@@ -534,7 +420,7 @@ fn build_villain_speech_http_request(
         &config.gemini_api_key,
         &config.gemini_villain_model,
         prompt,
-        villain_speech_response_schema(),
+        Some(villain_speech_response_schema()),
         0.6,
         2048,
     )
@@ -598,7 +484,7 @@ fn build_gemini_request(
     api_key: &str,
     model: &str,
     prompt: String,
-    response_schema: Value,
+    response_schema: Option<Value>,
     temperature: f32,
     max_output_tokens: u32,
 ) -> Result<spacetimedb::http::Request<String>, String> {
@@ -613,10 +499,7 @@ fn build_gemini_request(
             candidate_count: 1,
             max_output_tokens,
             temperature,
-            thinking_config: Some(GeminiThinkingConfig {
-                thinking_budget: 0,
-                include_thoughts: Some(false),
-            }),
+            thinking_config: None,
         },
     };
 
@@ -649,7 +532,7 @@ fn round_generation_temperature(round_key: &str) -> f32 {
 
 fn round_generation_max_output_tokens(round_key: &str) -> u32 {
     match round_key {
-        "round_1" => 4096,
+        "round_1" => 3000,
         "round_2" => 2200,
         "round_3" => 2200,
         "round_4" => 1600,
@@ -734,16 +617,16 @@ fn build_round_one_prompt(payload_value: &Value) -> Result<String, String> {
         "",
         "persona_paragraphs: Write 2 to 3 paragraphs written in the distinct voice of this persona. The primary goal of these paragraphs is to act as a riddle so Player 1 can deduce WHO is speaking.",
         "",
-        "clues: Generate exactly 6 complex clues. Each clue must include clue_id, clue_type, clue_text, required_manual_refs, expected_inference, and difficulty.",
+        "clues: Generate exactly 2 clues. Each clue must include clue_id, clue_type, clue_text, required_manual_refs, expected_inference, and difficulty.",
         "",
         "manual: Generate a data-dense manual used to decode clues with these sections:",
-        "- codex_entries: 8 to 10 records",
-        "- timeline_fragments: 6 to 8 records",
-        "- cipher_legend: 5 to 7 records",
-        "- protocol_matrix: 6 to 8 records",
-        "- false_leads: 2 to 3 deceptive records",
+        "- codex_entries: exactly 1 record",
+        "- timeline_fragments: exactly 1 record",
+        "- cipher_legend: exactly 1 record",
+        "- protocol_matrix: exactly 1 record",
+        "- false_leads: exactly 1 record",
         "",
-        "decoder_walkthrough: Provide at least 4 deduction steps mapping clue_id to manual_refs_used.",
+        "decoder_walkthrough: Provide exactly 1 deduction step mapping clue_id to manual_refs_used.",
         "",
         "solution: Provide final_identity_guess and final_target_word_inference.",
         "",
@@ -757,8 +640,9 @@ fn build_round_one_prompt(payload_value: &Value) -> Result<String, String> {
         "",
         "Make the persona's identity guessable through their tone, philosophy, and subtle lore hints.",
         "The clues must be non-trivial and at least half must require combining two or more manual sections.",
-        "Keep each persona paragraph under 90 words.",
+        "Keep each persona paragraph under 45 words.",
         "Keep manual records concise and data-like; avoid narrative verbosity in manual sections.",
+        "Keep all non-paragraph string fields under 12 words.",
         "Output JSON key order should be: persona_name, persona_paragraphs, target_word, forbidden_words, clues, manual, decoder_walkthrough, solution.",
         "",
         "Output rules:",

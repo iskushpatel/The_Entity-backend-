@@ -296,7 +296,8 @@ pub struct GeminiPart {
 #[serde(rename_all = "camelCase")]
 pub struct GeminiGenerationConfig {
     pub response_mime_type: String,
-    pub response_json_schema: Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub response_json_schema: Option<Value>,
     pub candidate_count: u32,
     pub max_output_tokens: u32,
     pub temperature: f32,
@@ -309,8 +310,6 @@ pub struct GeminiGenerationConfig {
 #[serde(rename_all = "camelCase")]
 pub struct GeminiThinkingConfig {
     pub thinking_budget: u32,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub include_thoughts: Option<bool>,
 }
 
 /// Minimal Gemini `generateContent` response envelope required to extract text.

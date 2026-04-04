@@ -196,8 +196,9 @@ pub struct MyRoomInfo {
 /// `room_id` and status directly from `room_ticket`.
 #[spacetimedb::procedure]
 pub fn get_my_room_info(ctx: &mut ProcedureContext) -> MyRoomInfo {
+    let sender = ctx.sender();
     ctx.with_tx(|tx| {
-        if let Some(ticket) = tx.db.room_ticket().owner_identity().find(ctx.sender()) {
+        if let Some(ticket) = tx.db.room_ticket().owner_identity().find(sender) {
             return MyRoomInfo {
                 room_id: ticket.room_id,
                 room_status: ticket.room_status,

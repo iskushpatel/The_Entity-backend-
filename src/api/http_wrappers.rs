@@ -3,7 +3,8 @@ use spacetimedb::{log, ProcedureContext, ReducerContext, Table};
 
 use crate::models::api_schemas::{
     ArmorIqContext, ArmorIqRequest, ArmorIqResponse, GeminiContent, GeminiGenerateContentRequest,
-    GeminiGenerateContentResponse, GeminiGenerationConfig, GeminiPart, GeminiValidatorDecision,
+    GeminiGenerateContentResponse, GeminiGenerationConfig, GeminiPart,
+    GeminiValidatorDecision,
     RelayTerminalValidatorRequest,
 };
 use crate::tables::state::{
@@ -322,10 +323,11 @@ fn build_gemini_validator_http_request(
         }],
         generation_config: GeminiGenerationConfig {
             response_mime_type: "application/json".to_string(),
-            response_json_schema: gemini_validator_response_schema(),
+            response_json_schema: Some(gemini_validator_response_schema()),
             candidate_count: 1,
             max_output_tokens: 256,
             temperature: 0.0,
+            thinking_config: None,
         },
     };
 
