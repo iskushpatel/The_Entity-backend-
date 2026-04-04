@@ -20,16 +20,16 @@ forbidden_words: List exactly 5 words that are the most obvious clues or synonym
 
 persona_paragraphs: Write 2 to 3 paragraphs written in the distinct voice of this persona. The primary goal of these paragraphs is to act as a riddle so Player 1 can deduce WHO is speaking.
 
-clues: Generate 8 complex clues, each of which requires one or more decoder references from the manual. Every clue must include clue_id, clue_text, clue_type, required_manual_refs, and expected_inference.
+clues: Generate exactly 6 complex clues, each of which requires one or more decoder references from the manual. Every clue must include clue_id, clue_text, clue_type, required_manual_refs, and expected_inference.
 
 manual: Generate a large, data-dense manual with structured sections used to decode clues:
-- codex_entries: 14 to 20 records
-- timeline_fragments: 10 to 14 records
-- cipher_legend: 8 to 12 records
-- protocol_matrix: 10 to 16 records
-- false_leads: 3 to 5 records explicitly marked deceptive
+- codex_entries: 8 to 10 records
+- timeline_fragments: 6 to 8 records
+- cipher_legend: 5 to 7 records
+- protocol_matrix: 6 to 8 records
+- false_leads: 2 to 3 records explicitly marked deceptive
 
-decoder_walkthrough: Explain clue-to-manual mapping for at least 5 clues. Each step must reference concrete clue_ids and manual record ids.
+decoder_walkthrough: Explain clue-to-manual mapping for at least 4 clues. Each step must reference concrete clue_ids and manual record ids.
 
 solution: Return final_identity_guess and final_target_word_inference.
 
@@ -46,6 +46,12 @@ Make the persona's identity guessable through their tone, philosophy, and subtle
 The clues must be multi-hop and non-trivial. At least half must require combining information from 2 or more manual sections.
 
 The manual must contain enough irrelevant but plausible data so decoding requires careful filtering.
+
+Keep each persona paragraph under 90 words.
+
+Keep manual records concise and data-like; avoid narrative verbosity in manual sections.
+
+Output JSON key order should be: persona_name, persona_paragraphs, target_word, forbidden_words, clues, manual, decoder_walkthrough, solution.
 `.trim();
 
 const ROUND_1_CHAT_SYSTEM_PROMPT_TEMPLATE = `
@@ -225,8 +231,8 @@ const roundOneManualSchema = {
     },
     clues: {
       type: "array",
-      minItems: 8,
-      maxItems: 8,
+      minItems: 6,
+      maxItems: 6,
       items: roundOneClueSchema
     },
     manual: {
@@ -235,32 +241,32 @@ const roundOneManualSchema = {
       properties: {
         codex_entries: {
           type: "array",
-          minItems: 14,
-          maxItems: 20,
+          minItems: 8,
+          maxItems: 10,
           items: roundOneCodexEntrySchema
         },
         timeline_fragments: {
           type: "array",
-          minItems: 10,
-          maxItems: 14,
+          minItems: 6,
+          maxItems: 8,
           items: roundOneTimelineFragmentSchema
         },
         cipher_legend: {
           type: "array",
-          minItems: 8,
-          maxItems: 12,
+          minItems: 5,
+          maxItems: 7,
           items: roundOneCipherLegendSchema
         },
         protocol_matrix: {
           type: "array",
-          minItems: 10,
-          maxItems: 16,
+          minItems: 6,
+          maxItems: 8,
           items: roundOneProtocolRowSchema
         },
         false_leads: {
           type: "array",
-          minItems: 3,
-          maxItems: 5,
+          minItems: 2,
+          maxItems: 3,
           items: roundOneFalseLeadSchema
         }
       },
@@ -274,7 +280,7 @@ const roundOneManualSchema = {
     },
     decoder_walkthrough: {
       type: "array",
-      minItems: 5,
+      minItems: 4,
       items: roundOneWalkthroughStepSchema
     },
     solution: {
@@ -340,7 +346,7 @@ const clueRoundConfigs = {
   [ROUND_1_KEY]: {
     responseSchema: roundOneManualSchema,
     temperature: 0.95,
-    maxOutputTokens: 3600
+    maxOutputTokens: 4096
   },
   [ROUND_2_KEY]: null,
   [ROUND_3_KEY]: null,
@@ -372,10 +378,10 @@ function buildRoundOneClueGeneratorPrompt(input = {}) {
     "6. persona_paragraphs must contain 2 or 3 full paragraphs, each written in the persona's distinct voice.",
     "7. The paragraphs must make the identity guessable through tone, philosophy, methods, worldview, and indirect lore.",
     "8. The paragraphs must not contain the persona name, direct aliases, the target_word, or any forbidden_words.",
-    "9. clues must have 8 entries and each clue must cite required_manual_refs that exist in manual sections.",
+    "9. clues must have 6 entries and each clue must cite required_manual_refs that exist in manual sections.",
     "10. manual must be dense and structured: codex_entries, timeline_fragments, cipher_legend, protocol_matrix, false_leads.",
     "11. At least 4 clues must require cross-section decoding (2+ manual sections).",
-    "12. decoder_walkthrough must explicitly map clue_id to manual_refs_used and deduction steps.",
+    "12. decoder_walkthrough must explicitly map clue_id to manual_refs_used and deduction steps (at least 4).",
     "13. Avoid bullet points inside prose JSON fields. Write polished, specific, non-generic text.",
     "",
     `Requested Persona: ${requestedPersona}`,

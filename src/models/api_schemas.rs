@@ -300,6 +300,17 @@ pub struct GeminiGenerationConfig {
     pub candidate_count: u32,
     pub max_output_tokens: u32,
     pub temperature: f32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thinking_config: Option<GeminiThinkingConfig>,
+}
+
+/// Optional Gemini controls for hidden-thought budget.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GeminiThinkingConfig {
+    pub thinking_budget: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub include_thoughts: Option<bool>,
 }
 
 /// Minimal Gemini `generateContent` response envelope required to extract text.

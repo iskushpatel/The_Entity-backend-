@@ -141,7 +141,11 @@ async function callGeminiJson({
         responseJsonSchema,
         temperature,
         candidateCount: 1,
-        maxOutputTokens
+        maxOutputTokens,
+        thinkingConfig: {
+          thinkingBudget: 0,
+          includeThoughts: false
+        }
       }
     }),
     signal: AbortSignal.timeout(timeoutMs)
@@ -153,6 +157,11 @@ async function callGeminiJson({
   }
 
   const envelope = JSON.parse(rawText);
+  const finishReason = envelope?.candidates?.[0]?.finishReason;
+  if (finishReason && finishReason !== "STOP") {
+    throw new Error(`Gemini returned incomplete output (finishReason=${finishReason})`);
+  }
+
   const candidateText =
     envelope?.candidates?.[0]?.content?.parts?.find((part) => typeof part.text === "string")?.text;
 
