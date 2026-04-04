@@ -2,10 +2,13 @@ const http = require("node:http");
 const { loadLocalEnv } = require("./env");
 const {
   buildClueGeneratorPrompt,
+  buildRoundOneSkeletonPrompt,
+  buildRoundOneExpansionPrompt,
   getClueGeneratorRoundConfig,
   buildTerminalValidatorPrompt,
   buildVillainSpeechPrompt,
   ROUND_1_KEY,
+  roundOneSkeletonSchema,
   terminalValidatorSchema,
   villainSpeechSchema
 } = require("./prompts");
@@ -37,6 +40,8 @@ function createConfigFromEnv(overrides = {}) {
     armorIqUserId: overrides.armorIqUserId ?? process.env.ARMORIQ_USER_ID ?? "",
     armorIqAgentId: overrides.armorIqAgentId ?? process.env.ARMORIQ_AGENT_ID ?? "",
     geminiApiKey: overrides.geminiApiKey ?? process.env.GEMINI_API_KEY ?? "",
+    geminiExpansionApiKey:
+      overrides.geminiExpansionApiKey ?? process.env.GEMINI_EXPANSION_API_KEY ?? "",
     geminiClueModel: overrides.geminiClueModel || process.env.GEMINI_CLUE_MODEL || "gemini-2.5-flash",
     geminiValidatorModel:
       overrides.geminiValidatorModel || process.env.GEMINI_VALIDATOR_MODEL || "gemini-2.5-flash",
@@ -99,6 +104,33 @@ function createServer(config = createConfigFromEnv()) {
           throw withStatus(error, 501);
         }
 
+        if (roundKey === ROUND_1_KEY) {
+          const skeleton = await callGeminiJson({
+            apiKey: config.geminiApiKey,
+            model: config.geminiClueModel,
+            prompt: buildRoundOneSkeletonPrompt(body),
+            responseJsonSchema: roundOneSkeletonSchema,
+            mockMode: config.mockMode,
+            mockValue: buildMockClueResponse(body),
+            maxOutputTokens: 3000,
+            temperature: 0.6
+          });
+
+          const expansionApiKey = config.geminiExpansionApiKey || config.geminiApiKey;
+          const expanded = await callGeminiJson({
+            apiKey: expansionApiKey,
+            model: config.geminiClueModel,
+            prompt: buildRoundOneExpansionPrompt(body, skeleton),
+            responseJsonSchema: roundConfig.responseSchema,
+            mockMode: config.mockMode,
+            mockValue: buildMockClueResponse(body),
+            maxOutputTokens: roundConfig.maxOutputTokens,
+            temperature: roundConfig.temperature
+          });
+
+          return sendJson(res, 200, expanded);
+        }
+
         const result = await callGeminiJson({
           apiKey: config.geminiApiKey,
           model: config.geminiClueModel,
@@ -124,7 +156,7 @@ function createServer(config = createConfigFromEnv()) {
           responseJsonSchema: terminalValidatorSchema,
           mockMode: config.mockMode,
           mockValue: buildMockValidatorResponse(body),
-          maxOutputTokens: 256,
+          maxOutputTokens: 556,
           temperature: 0.0
         });
         return sendJson(res, 200, result);
@@ -139,7 +171,7 @@ function createServer(config = createConfigFromEnv()) {
           responseJsonSchema: villainSpeechSchema,
           mockMode: config.mockMode,
           mockValue: buildMockVillainResponse(body),
-          maxOutputTokens: 2048,
+          maxOutputTokens: 5048,
           temperature: 0.6
         });
 

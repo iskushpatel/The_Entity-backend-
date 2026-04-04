@@ -13,7 +13,7 @@ use crate::tables::state::{
     round_generation_request_schedule, server_config, villain_speech_callback_schedule,
     villain_speech_request, villain_speech_request_schedule, villain_tts_callback_schedule,
     villain_tts_request_schedule, voice_config, RoundGenerationCallbackSchedule,
-    RoundGenerationRequest, RoundGenerationRequestSchedule, ServerConfig,
+    RoundGenerationPhase, RoundGenerationRequest, RoundGenerationRequestSchedule, ServerConfig,
     VillainSpeechCallbackSchedule, VillainSpeechPhase, VillainSpeechRequest,
     VillainSpeechRequestSchedule, VillainTtsCallbackSchedule, VillainTtsRequestSchedule,
     VoiceConfig, ACTIVE_SERVER_CONFIG_KEY, ACTIVE_VOICE_CONFIG_KEY,
@@ -382,7 +382,8 @@ fn build_round_content_http_request(
         &config.gemini_clue_generator_model,
     )?;
 
-    let prompt = build_round_generation_prompt(&request.round_key, &request.request_payload_json)?;
+    let prompt = build_round_generation_prompt(request)?;
+    let max_tokens = round_generation_max_output_tokens(request);
 
     build_gemini_request(
         &config.gemini_api_base_url,
@@ -390,8 +391,8 @@ fn build_round_content_http_request(
         &config.gemini_clue_generator_model,
         prompt,
         None,
-        round_generation_temperature(&request.round_key),
-        round_generation_max_output_tokens(&request.round_key),
+        round_generation_temperature(request),
+        max_tokens,
     )
 }
 
@@ -509,6 +510,7 @@ fn build_gemini_request(
         model,
         api_key,
     );
+
     let body = serde_json::to_string(&payload)
         .map_err(|err| format!("failed to serialize Gemini request payload: {err}"))?;
 
@@ -520,9 +522,13 @@ fn build_gemini_request(
         .map_err(|err| format!("failed to build Gemini HTTP request: {err}"))
 }
 
-fn round_generation_temperature(round_key: &str) -> f32 {
-    match round_key {
-        "round_1" => 0.95,
+fn round_generation_temperature(request: &RoundGenerationRequest) -> f32 {
+    match request.round_key.as_str() {
+        "round_1" => match request.phase {
+            RoundGenerationPhase::PendingGeminiSkeleton => 0.95,
+            RoundGenerationPhase::PendingGeminiExpansion => 0.65,
+            _ => 0.65,
+        },
         "round_2" => 0.8,
         "round_3" => 0.75,
         "round_4" => 0.55,
@@ -530,9 +536,13 @@ fn round_generation_temperature(round_key: &str) -> f32 {
     }
 }
 
-fn round_generation_max_output_tokens(round_key: &str) -> u32 {
-    match round_key {
-        "round_1" => 3000,
+fn round_generation_max_output_tokens(request: &RoundGenerationRequest) -> u32 {
+    match request.round_key.as_str() {
+        "round_1" => match request.phase {
+            RoundGenerationPhase::PendingGeminiSkeleton => 2000,
+            RoundGenerationPhase::PendingGeminiExpansion => 3500,
+            _ => 3500,
+        },
         "round_2" => 2200,
         "round_3" => 2200,
         "round_4" => 1600,
@@ -540,15 +550,16 @@ fn round_generation_max_output_tokens(round_key: &str) -> u32 {
     }
 }
 
-fn build_round_generation_prompt(
-    round_key: &str,
-    request_payload_json: &str,
-) -> Result<String, String> {
-    let payload_value: Value = serde_json::from_str(request_payload_json)
+fn build_round_generation_prompt(request: &RoundGenerationRequest) -> Result<String, String> {
+    let payload_value: Value = serde_json::from_str(&request.request_payload_json)
         .map_err(|err| format!("invalid request_payload_json: {err}"))?;
 
-    match normalize_round_key(round_key)?.as_str() {
-        "round_1" => build_round_one_prompt(&payload_value),
+    match normalize_round_key(&request.round_key)?.as_str() {
+        "round_1" => match request.phase {
+            RoundGenerationPhase::PendingGeminiSkeleton => build_round_one_skeleton_prompt(&payload_value),
+            RoundGenerationPhase::PendingGeminiExpansion => build_round_one_expansion_prompt(&payload_value, request.skeleton_payload_json.as_deref()),
+            _ => Err("Invalid phase for round 1 generation".to_string()),
+        },
         "round_2" => Ok([
             "You are an expert game designer creating Round 2 content for an asymmetrical deduction game.",
             "Generate a complete clue and manual package for the requested Round 2 structure.",
@@ -558,7 +569,7 @@ fn build_round_generation_prompt(
             "Return JSON only and follow the response schema exactly.",
             "",
             "Round parameter JSON:",
-            &serde_json::to_string_pretty(&payload_value).unwrap_or_else(|_| request_payload_json.to_string()),
+            &serde_json::to_string_pretty(&payload_value).unwrap_or_else(|_| request.request_payload_json.to_string()),
         ]
         .join("\n")),
         "round_3" => Ok([
@@ -569,7 +580,7 @@ fn build_round_generation_prompt(
             "Return JSON only and follow the response schema exactly.",
             "",
             "Round parameter JSON:",
-            &serde_json::to_string_pretty(&payload_value).unwrap_or_else(|_| request_payload_json.to_string()),
+            &serde_json::to_string_pretty(&payload_value).unwrap_or_else(|_| request.request_payload_json.to_string()),
         ]
         .join("\n")),
         "round_4" => Ok([
@@ -580,15 +591,15 @@ fn build_round_generation_prompt(
             "Return JSON only and follow the response schema exactly.",
             "",
             "Round parameter JSON:",
-            &serde_json::to_string_pretty(&payload_value).unwrap_or_else(|_| request_payload_json.to_string()),
+            &serde_json::to_string_pretty(&payload_value).unwrap_or_else(|_| request.request_payload_json.to_string()),
         ]
         .join("\n")),
         _ => unreachable!(),
     }
 }
 
-fn build_round_one_prompt(payload_value: &Value) -> Result<String, String> {
-    let requested_persona = payload_value
+fn get_requested_persona(payload_value: &Value) -> Result<&str, String> {
+    payload_value
         .get("requested_persona")
         .or_else(|| payload_value.get("requestedPersona"))
         .or_else(|| payload_value.get("persona_name"))
@@ -598,11 +609,15 @@ fn build_round_one_prompt(payload_value: &Value) -> Result<String, String> {
         .filter(|value| !value.is_empty())
         .ok_or_else(|| {
             "round_1 generation requires requested_persona in request_payload_json".to_string()
-        })?;
+        })
+}
+
+fn build_round_one_skeleton_prompt(payload_value: &Value) -> Result<String, String> {
+    let requested_persona = get_requested_persona(payload_value)?;
 
     Ok([
         "Role & Objective:",
-        "You are an expert game designer creating an asymmetrical deduction game. Generate a single \"Round 1 Manual\" for the requested character persona.",
+        "You are an expert game designer creating an asymmetrical deduction game. Generate a Skeleton for the requested character persona.",
         "",
         "Requested Persona:",
         requested_persona,
@@ -615,20 +630,55 @@ fn build_round_one_prompt(payload_value: &Value) -> Result<String, String> {
         "",
         "forbidden_words: List exactly 5 words that are the most obvious clues or synonyms for the target_word.",
         "",
-        "persona_paragraphs: Write 2 to 3 paragraphs written in the distinct voice of this persona. The primary goal of these paragraphs is to act as a riddle so Player 1 can deduce WHO is speaking.",
+        "clue_concepts: Generate exactly 4 short concepts/ideas for clues. Do not write the full clues.",
         "",
-        "clues: Generate exactly 2 clues. Each clue must include clue_id, clue_type, clue_text, required_manual_refs, expected_inference, and difficulty.",
+        "manual_structure: Outline the structure of a large manual with many sections (codex_entries, timeline_fragments, cipher_legend, protocol_matrix, false_leads). Give a brief 1 sentence description of the overall theme and how distractors will function to hide the true clues.",
         "",
-        "manual: Generate a data-dense manual used to decode clues with these sections:",
-        "- codex_entries: exactly 1 record",
-        "- timeline_fragments: exactly 1 record",
-        "- cipher_legend: exactly 1 record",
-        "- protocol_matrix: exactly 1 record",
-        "- false_leads: exactly 1 record",
-        "",
-        "decoder_walkthrough: Provide exactly 1 deduction step mapping clue_id to manual_refs_used.",
+        "decoder_walkthrough_skeleton: Provide a logical flow mapping the 4 clues to sections in the manual that would allow deducing the target word.",
         "",
         "solution: Provide final_identity_guess and final_target_word_inference.",
+        "",
+        "Return JSON strictly following these keys: persona_name, target_word, forbidden_words, clue_concepts, manual_structure, decoder_walkthrough_skeleton, solution.",
+    ]
+    .join("\n"))
+}
+
+fn build_round_one_expansion_prompt(payload_value: &Value, skeleton_json: Option<&str>) -> Result<String, String> {
+    let requested_persona = get_requested_persona(payload_value)?;
+    let skeleton = skeleton_json.ok_or_else(|| "Skeleton JSON missing for expansion phase".to_string())?;
+
+    Ok([
+        "Role & Objective:",
+        "You are an expert game designer. Below is a Skeleton for a deduction game round. Expand this skeleton into the final full version.",
+        "",
+        "Requested Persona:",
+        requested_persona,
+        "",
+        "Skeleton Context:",
+        skeleton,
+        "",
+        "Task Details:",
+        "",
+        "persona_name: Keep from skeleton.",
+        "",
+        "target_word: Keep from skeleton.",
+        "",
+        "forbidden_words: Keep from skeleton.",
+        "",
+        "persona_paragraphs: Write 2 to 3 paragraphs written in the distinct voice of this persona. The primary goal of these paragraphs is to act as a riddle so Player 1 can deduce WHO is speaking.",
+        "",
+        "clues: Generate exactly 4 clues based on clue_concepts in skeleton. Each clue must include clue_id, clue_type, clue_text, required_manual_refs, expected_inference, and difficulty.",
+        "",
+        "manual: Expand the manual_structure into detailed content with these sections. It must be a large document with many details where the real answers are hidden among many distractors. Output must be a JSON array of strings or formatted text for each section:",
+        "- codex_entries: generate a single massive, highly detailed narrative report spanning 4-5 paragraphs filled with dense lore, distractors, and the real answer.",
+        "- timeline_fragments: generate 1 precise timeline record.",
+        "- cipher_legend: generate detailed rules with 1 complex cipher.",
+        "- protocol_matrix: generate 1 detailed operational rule.",
+        "- false_leads: generate 1 highly plausible red herring paragraph.",
+        "",
+        "decoder_walkthrough: Provide exact deduction steps mapping each clue_id to manual_refs_used.",
+        "",
+        "solution: Keep from skeleton.",
         "",
         "ABSOLUTE CONSTRAINTS:",
         "",
@@ -638,11 +688,12 @@ fn build_round_one_prompt(payload_value: &Value) -> Result<String, String> {
         "",
         "DO NOT use ANY of the 5 forbidden_words anywhere in the paragraphs.",
         "",
+        "The final output MUST be pure JSON matching the standard final clue and manual structure for Round 1.",
+        "",
         "Make the persona's identity guessable through their tone, philosophy, and subtle lore hints.",
         "The clues must be non-trivial and at least half must require combining two or more manual sections.",
-        "Keep each persona paragraph under 45 words.",
-        "Keep manual records concise and data-like; avoid narrative verbosity in manual sections.",
-        "Keep all non-paragraph string fields under 12 words.",
+        "Keep each persona paragraph around 80 words.",
+        "The manual sections should contain many paragraphs of details to act as distractors where the real clues are hidden.",
         "Output JSON key order should be: persona_name, persona_paragraphs, target_word, forbidden_words, clues, manual, decoder_walkthrough, solution.",
         "",
         "Output rules:",
@@ -651,8 +702,7 @@ fn build_round_one_prompt(payload_value: &Value) -> Result<String, String> {
         "3. persona_name must exactly match the requested persona string.",
         "4. target_word must be a single noun.",
         "5. forbidden_words must contain exactly 5 distinct words.",
-        "6. Avoid bullet points in prose fields.",
-        "7. persona_paragraphs must contain 2 or 3 full paragraphs in the persona voice.",
+        "6. persona_paragraphs must contain 2 or 3 full paragraphs in the persona voice.",
         "",
         "Additional payload JSON:",
         &serde_json::to_string_pretty(payload_value).unwrap_or_else(|_| "{}".to_string()),
@@ -812,13 +862,21 @@ pub fn parse_round_generation_result(body: &str) -> Result<Value, String> {
             .and_then(Value::as_str)
             .unwrap_or("UNKNOWN");
 
+        let text = extract_gemini_text(body)?;
+        let candidate_value: Result<Value, _> = serde_json::from_str(&text);
+
+        // Gemini can mark a response as MAX_TOKENS even when the JSON object is complete.
+        // Accept complete candidate JSON regardless of finish reason and only fail when parse fails.
+        if let Ok(value) = candidate_value {
+            return Ok(value);
+        }
+
         if finish_reason != "STOP" {
             return Err(format!(
                 "Gemini candidate incomplete (finishReason={finish_reason}); retry generation with a smaller payload"
             ));
         }
 
-        let text = extract_gemini_text(body)?;
         return serde_json::from_str(&text).map_err(|err| {
             format!(
                 "failed to parse extracted Gemini candidate JSON: {err}; candidate_len={}",

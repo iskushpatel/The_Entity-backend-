@@ -76,18 +76,20 @@ pub fn generate_clue_manual_for_room(
             player_identity: ctx.sender(),
             request_payload_json: normalized_payload_json.clone(),
             response_schema_json: normalized_schema_json,
-            phase: RoundGenerationPhase::PendingGemini,
+            phase: RoundGenerationPhase::PendingGeminiSkeleton,
+            skeleton_payload_json: None,
             response_payload_json: None,
             hidden_answer_candidate: None,
             error_message: None,
             created_at: ctx.timestamp,
             updated_at: ctx.timestamp,
+            retries: Some(0),
         });
 
     upsert_round_content_artifact(
         ctx,
         RoundContentArtifact {
-            artifact_key,
+            artifact_key: artifact_key.clone(),
             room_id: room.room_id,
             game_id: room.game_id,
             round_key: normalized_round_key,
@@ -165,6 +167,7 @@ pub fn generate_villain_speech_for_room(
             error_message: None,
             created_at: ctx.timestamp,
             updated_at: ctx.timestamp,
+            retries: Some(0),
         });
 
     upsert_villain_speech_artifact(
@@ -290,6 +293,21 @@ pub fn _round_content_callback(
         return Ok(());
     }
 
+    let current_retries = request.retries.unwrap_or(0);
+    if callback.status_code == 429 && current_retries < 3 {
+        request.retries = Some(current_retries + 1);
+        request.updated_at = ctx.timestamp;
+        ctx.db
+            .round_generation_request()
+            .request_id()
+            .update(request.clone());
+
+        // Queue another identical request. It will be picked up immediately
+        // but retry attempts provide a small safety net against transient 429s.
+        queue_round_generation_request(ctx, request.request_id).ok();
+        return Ok(());
+    }
+
     if callback.status_code != 200 {
         let error_message = format!("Gemini returned HTTP {}", callback.status_code);
         request.phase = RoundGenerationPhase::Failed;
@@ -323,6 +341,22 @@ pub fn _round_content_callback(
 
     let response_payload_json = serde_json::to_string(&response_value)
         .map_err(|err| format!("failed to serialize round content response: {err}"))?;
+
+    // Handle two-stage expansion state machine for Round 1
+    if request.round_key == "round_1" && request.phase == RoundGenerationPhase::PendingGeminiSkeleton {
+        request.phase = RoundGenerationPhase::PendingGeminiExpansion;
+        request.skeleton_payload_json = Some(response_payload_json.clone());
+        request.updated_at = ctx.timestamp;
+        ctx.db
+            .round_generation_request()
+            .request_id()
+            .update(request.clone());
+
+        // Re-queue the request for the expansion phase
+        queue_round_generation_request(ctx, request.request_id).ok();
+        return Ok(());
+    }
+
     let hidden_answer_candidate = extract_hidden_answer_candidate(&response_value);
 
     request.phase = RoundGenerationPhase::Succeeded;
@@ -404,6 +438,20 @@ pub fn _villain_speech_callback(
             .update(request.clone());
 
         fail_villain_artifact(ctx, &mut artifact, request.request_id, transport_error);
+        return Ok(());
+    }
+
+    let current_retries = request.retries.unwrap_or(0);
+    if callback.status_code == 429 && current_retries < 3 {
+        request.retries = Some(current_retries + 1);
+        request.phase = VillainSpeechPhase::PendingGemini;
+        request.updated_at = ctx.timestamp;
+        ctx.db
+            .villain_speech_request()
+            .request_id()
+            .update(request.clone());
+
+        queue_villain_speech_request(ctx, request.request_id).ok();
         return Ok(());
     }
 
@@ -602,7 +650,19 @@ pub fn _villain_tts_callback(
         fail_villain_artifact(ctx, &mut artifact, request.request_id, transport_error);
         return Ok(());
     }
+    let current_retries = request.retries.unwrap_or(0);
+    if callback.status_code == 429 && current_retries < 3 {
+        request.retries = Some(current_retries + 1);
+        request.phase = VillainSpeechPhase::PendingTts;
+        request.updated_at = ctx.timestamp;
+        ctx.db
+            .villain_speech_request()
+            .request_id()
+            .update(request.clone());
 
+        queue_villain_tts_request(ctx, request.request_id).ok();
+        return Ok(());
+    }
     if callback.status_code != 200 {
         let error_message = format!("ElevenLabs returned HTTP {}", callback.status_code);
         request.phase = VillainSpeechPhase::Failed;

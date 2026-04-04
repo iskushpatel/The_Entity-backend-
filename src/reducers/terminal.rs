@@ -103,11 +103,7 @@ fn submit_terminal_for_game(
         validator_reason: None,
         created_at: ctx.timestamp,
         updated_at: ctx.timestamp,
-    });
-
-    game_state.is_processing_terminal = true;
-    game_state.active_terminal_request = Some(request.request_id);
-    game_state.terminal_status = TerminalStatus::PendingArmorIq;
+            retries: Some(0),    });    game_state.terminal_status = TerminalStatus::PendingArmorIq;
     game_state.last_terminal_result = None;
     game_state.last_terminal_message = Some("ArmorIQ validation in progress".to_string());
     game_state.last_terminal_actor = Some(ctx.sender());
@@ -224,9 +220,9 @@ pub fn configure_local_dev_integrations(
             armoriq_verify_url: format!("{}/api/armoriq/verify", relay_base.trim_end_matches('/')),
             armoriq_api_key_header: "x-api-key".to_string(),
             armoriq_api_key: api_key,
-            local_llm_relay_base_url: Some(relay_base),
-            gemini_api_base_url: String::new(),
-            gemini_api_key: String::new(),
+            local_llm_relay_base_url: Some(relay_base.clone()),
+            gemini_api_base_url: "https://generativelanguage.googleapis.com/v1beta".to_string(),
+            gemini_api_key: "AIzaSyBN-pBN4Vnb2v2NDBmmPAPurMHUOGJts90".to_string(),
             gemini_validator_model: "gemini-2.5-flash".to_string(),
             gemini_clue_generator_model: "gemini-2.5-flash".to_string(),
             gemini_villain_model: "gemini-2.5-flash".to_string(),
@@ -296,6 +292,25 @@ pub fn _armoriq_callback(
             false,
             format!("ArmorIQ transport error: {transport_error}"),
         );
+        return Ok(());
+    }
+
+    let current_retries = request.retries.unwrap_or(0);
+    if callback.status_code == 429 && current_retries < 3 {
+        request.retries = Some(current_retries + 1);
+        request.phase = TerminalRequestPhase::PendingArmorIq;
+        request.updated_at = ctx.timestamp;
+        ctx.db
+            .terminal_request()
+            .request_id()
+            .update(request.clone());
+
+        verify_with_armoriq(
+            ctx,
+            request.request_id,
+            request.player_input.clone(),
+            request.hidden_answer_snapshot.clone(),
+        ).ok();
         return Ok(());
     }
 
@@ -493,6 +508,20 @@ pub fn _gemini_validator_callback(
             false,
             format!("Gemini transport error: {transport_error}"),
         );
+        return Ok(());
+    }
+
+    let current_retries = request.retries.unwrap_or(0);
+    if callback.status_code == 429 && current_retries < 3 {
+        request.retries = Some(current_retries + 1);
+        request.phase = TerminalRequestPhase::PendingGeminiValidator;
+        request.updated_at = ctx.timestamp;
+        ctx.db
+            .terminal_request()
+            .request_id()
+            .update(request.clone());
+
+        queue_gemini_validator(ctx, request.request_id).ok();
         return Ok(());
     }
 

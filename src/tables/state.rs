@@ -66,7 +66,8 @@ pub enum GenerationStatus {
 /// Fine-grained request state tracked for clue/manual generation jobs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, SpacetimeType)]
 pub enum RoundGenerationPhase {
-    PendingGemini,
+    PendingGeminiSkeleton,
+    PendingGeminiExpansion,
     Failed,
     Succeeded,
 }
@@ -251,6 +252,7 @@ pub struct TerminalRequest {
     pub validator_reason: Option<String>,
     pub created_at: Timestamp,
     pub updated_at: Timestamp,
+    pub retries: Option<u32>,
 }
 
 /// Durable request row for room-scoped clue/manual generation.
@@ -271,11 +273,13 @@ pub struct RoundGenerationRequest {
     pub request_payload_json: String,
     pub response_schema_json: String,
     pub phase: RoundGenerationPhase,
+    pub skeleton_payload_json: Option<String>,
     pub response_payload_json: Option<String>,
     pub hidden_answer_candidate: Option<String>,
     pub error_message: Option<String>,
     pub created_at: Timestamp,
     pub updated_at: Timestamp,
+    pub retries: Option<u32>,
 }
 
 /// Durable request row for villain speech generation and optional audio synthesis.
@@ -304,6 +308,7 @@ pub struct VillainSpeechRequest {
     pub error_message: Option<String>,
     pub created_at: Timestamp,
     pub updated_at: Timestamp,
+    pub retries: Option<u32>,
 }
 
 /// Queue row that schedules the outbound ArmorIQ HTTP procedure.

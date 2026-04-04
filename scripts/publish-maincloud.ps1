@@ -1,7 +1,8 @@
 param(
     [string]$Database = "the-entity-ty5fs",
     [string]$Server = "maincloud",
-    [switch]$SkipChecks
+    [switch]$SkipChecks,
+    [switch]$DeleteData
 )
 
 $ErrorActionPreference = "Stop"
@@ -49,7 +50,11 @@ try {
     }
 
     Write-Host "Publishing $Database to $Server..." -ForegroundColor Cyan
-    & $spacetimeExe publish --server $Server -y --module-path . $Database
+    if ($DeleteData) {
+        & $spacetimeExe publish --server $Server -y --module-path . $Database --delete-data
+    } else {
+        & $spacetimeExe publish --server $Server -y --module-path . $Database
+    }
     if ($LASTEXITCODE -ne 0) {
         throw "Publish failed."
     }

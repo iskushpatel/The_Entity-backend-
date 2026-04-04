@@ -114,7 +114,8 @@ async function callGeminiJson({
   mockValue,
   timeoutMs = 20000,
   maxOutputTokens = 512,
-  temperature = 0.2
+  temperature = 0.2,
+  rateLimitBackoffBaseMs = 800
 }) {
   if (mockMode) {
     return mockValue;
@@ -128,44 +129,149 @@ async function callGeminiJson({
     throw new Error("Gemini model name is missing");
   }
 
-  const response = await fetch(`${GEMINI_API_BASE}/models/${model}:generateContent`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "x-goog-api-key": apiKey
-    },
-    body: JSON.stringify({
-      contents: [{ role: "user", parts: [{ text: prompt }] }],
-      generationConfig: {
-        responseMimeType: "application/json",
-        responseJsonSchema,
-        temperature,
-        candidateCount: 1,
-        maxOutputTokens
+  const maxRetryTokenCap = 8192;
+  const maxRateLimitRetries = 3;
+  const baseBackoffMs = Math.max(0, Number(rateLimitBackoffBaseMs) || 0);
+
+  function formatUsage(usage) {
+    if (!usage) return "usage=n/a";
+    const p = usage.promptTokenCount ?? "n/a";
+    const c = usage.candidatesTokenCount ?? "n/a";
+    const t = usage.totalTokenCount ?? "n/a";
+    return `prompt=${p}, candidates=${c}, total=${t}`;
+  }
+
+  function buildGenerationConfig(tokens) {
+    const cfg = {
+      responseMimeType: "application/json",
+      temperature,
+      candidateCount: 1,
+      maxOutputTokens: tokens
+    };
+
+    if (responseJsonSchema) {
+      cfg.responseJsonSchema = responseJsonSchema;
+    }
+
+    return cfg;
+  }
+
+  function parseRetryAfterMs(value) {
+    if (!value) return null;
+
+    const trimmed = String(value).trim();
+    const numericSeconds = Number(trimmed);
+    if (Number.isFinite(numericSeconds) && numericSeconds >= 0) {
+      return Math.floor(numericSeconds * 1000);
+    }
+
+    const dateMs = Date.parse(trimmed);
+    if (!Number.isFinite(dateMs)) {
+      return null;
+    }
+
+    const delta = dateMs - Date.now();
+    return delta > 0 ? delta : 0;
+  }
+
+  function getBackoffDelayMs(attemptIndex, retryAfterHeader) {
+    const retryAfterMs = parseRetryAfterMs(retryAfterHeader);
+    const exponentialMs = Math.min(12000, baseBackoffMs * Math.pow(2, attemptIndex));
+    const jitterMs = Math.floor(Math.random() * 250);
+    return Math.max(retryAfterMs ?? 0, exponentialMs + jitterMs);
+  }
+
+  async function requestOnce(tokens) {
+    for (let attempt = 0; attempt <= maxRateLimitRetries; attempt++) {
+      const response = await fetch(`${GEMINI_API_BASE}/models/${model}:generateContent`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-goog-api-key": apiKey
+        },
+        body: JSON.stringify({
+          contents: [{ role: "user", parts: [{ text: prompt }] }],
+          generationConfig: buildGenerationConfig(tokens)
+        }),
+        signal: AbortSignal.timeout(timeoutMs)
+      });
+
+      const rawText = await response.text();
+      if (response.ok) {
+        let envelope;
+        try {
+          envelope = JSON.parse(rawText);
+        } catch (err) {
+          throw new Error(`Gemini returned invalid JSON envelope: ${err.message}`);
+        }
+
+        const candidate = envelope?.candidates?.[0];
+        const finishReason = candidate?.finishReason;
+        const candidateText =
+          candidate?.content?.parts?.find((part) => typeof part.text === "string")?.text;
+
+        if (!candidateText) {
+          throw new Error("Gemini response did not include a text candidate");
+        }
+
+        return { envelope, finishReason, candidateText, usage: envelope?.usageMetadata, tokens };
       }
-    }),
-    signal: AbortSignal.timeout(timeoutMs)
-  });
 
-  const rawText = await response.text();
-  if (!response.ok) {
-    throw new Error(`Gemini returned HTTP ${response.status}: ${rawText}`);
+      if (response.status === 429 && attempt < maxRateLimitRetries) {
+        const delayMs = getBackoffDelayMs(attempt, response.headers.get("retry-after"));
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+        continue;
+      }
+
+      throw new Error(`Gemini returned HTTP ${response.status}: ${rawText}`);
+    }
+
+    throw new Error("Gemini request exhausted retries without a successful response");
   }
 
-  const envelope = JSON.parse(rawText);
-  const finishReason = envelope?.candidates?.[0]?.finishReason;
-  if (finishReason && finishReason !== "STOP") {
-    throw new Error(`Gemini returned incomplete output (finishReason=${finishReason})`);
+  function parseCandidateJson(candidateText, context) {
+    try {
+      return JSON.parse(candidateText);
+    } catch (err) {
+      throw new Error(`Gemini candidate JSON parse failed (${context}): ${err.message}`);
+    }
   }
 
-  const candidateText =
-    envelope?.candidates?.[0]?.content?.parts?.find((part) => typeof part.text === "string")?.text;
+  const first = await requestOnce(maxOutputTokens);
 
-  if (!candidateText) {
-    throw new Error("Gemini response did not include a text candidate");
+  if (!first.finishReason || first.finishReason === "STOP") {
+    return parseCandidateJson(first.candidateText, `tokens=${first.tokens}`);
   }
 
-  return JSON.parse(candidateText);
+  if (first.finishReason === "MAX_TOKENS") {
+    const retryTokens = Math.min(
+      maxRetryTokenCap,
+      Math.max(maxOutputTokens + 1024, Math.floor(maxOutputTokens * 1.5))
+    );
+
+    if (retryTokens <= maxOutputTokens) {
+      throw new Error(
+        `Gemini output incomplete (finishReason=MAX_TOKENS) and cannot retry above requested limit=${maxOutputTokens}; ${formatUsage(first.usage)}`
+      );
+    }
+
+    const second = await requestOnce(retryTokens);
+
+    if (!second.finishReason || second.finishReason === "STOP") {
+      return parseCandidateJson(
+        second.candidateText,
+        `retry tokens=${second.tokens} after MAX_TOKENS at ${first.tokens}`
+      );
+    }
+
+    throw new Error(
+      `Gemini output incomplete after retry (finishReason=${second.finishReason}); requested=${maxOutputTokens}, retried=${retryTokens}; first(${formatUsage(first.usage)}), retry(${formatUsage(second.usage)})`
+    );
+  }
+
+  throw new Error(
+    `Gemini returned incomplete output (finishReason=${first.finishReason}); ${formatUsage(first.usage)}`
+  );
 }
 
 async function callArmorIqVerify({

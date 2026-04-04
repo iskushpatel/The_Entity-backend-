@@ -370,6 +370,83 @@ const roundOneCompactSchema = {
   ]
 };
 
+const roundOneSkeletonSchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    persona_name: { type: "string" },
+    target_word: { type: "string" },
+    forbidden_words: {
+      type: "array",
+      minItems: 5,
+      maxItems: 5,
+      items: { type: "string" }
+    },
+    persona_voice_notes: {
+      type: "array",
+      minItems: 2,
+      maxItems: 4,
+      items: { type: "string" }
+    },
+    clue_blueprint: {
+      type: "array",
+      minItems: 4,
+      maxItems: 8,
+      items: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          clue_id: { type: "string" },
+          clue_type: { type: "string" },
+          clue_intent: { type: "string" },
+          required_sections: {
+            type: "array",
+            minItems: 1,
+            items: { type: "string" }
+          }
+        },
+        required: ["clue_id", "clue_type", "clue_intent", "required_sections"]
+      }
+    },
+    manual_blueprint: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        codex_entries_count: { type: "number" },
+        timeline_fragments_count: { type: "number" },
+        cipher_legend_count: { type: "number" },
+        protocol_matrix_count: { type: "number" },
+        false_leads_count: { type: "number" }
+      },
+      required: [
+        "codex_entries_count",
+        "timeline_fragments_count",
+        "cipher_legend_count",
+        "protocol_matrix_count",
+        "false_leads_count"
+      ]
+    },
+    solution_hint: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        identity_hint: { type: "string" },
+        target_hint: { type: "string" }
+      },
+      required: ["identity_hint", "target_hint"]
+    }
+  },
+  required: [
+    "persona_name",
+    "target_word",
+    "forbidden_words",
+    "persona_voice_notes",
+    "clue_blueprint",
+    "manual_blueprint",
+    "solution_hint"
+  ]
+};
+
 const terminalValidatorSchema = {
   type: "object",
   additionalProperties: false,
@@ -411,7 +488,7 @@ const clueRoundConfigs = {
   [ROUND_1_KEY]: {
     responseSchema: roundOneCompactSchema,
     temperature: 0.95,
-    maxOutputTokens: 3000
+    maxOutputTokens: 6000
   },
   [ROUND_2_KEY]: null,
   [ROUND_3_KEY]: null,
@@ -453,6 +530,55 @@ function buildRoundOneClueGeneratorPrompt(input = {}) {
     "",
     "Return this JSON schema exactly:",
     JSON.stringify(roundOneManualSchema, null, 2)
+  ].join("\n");
+}
+
+function buildRoundOneSkeletonPrompt(input = {}) {
+  const requestedPersona = getRequestedPersona(input);
+
+  return [
+    "You are generating a compact skeleton for a Round 1 deduction package.",
+    "Return JSON only.",
+    "Do not write full clues or full manual records.",
+    "Focus on blueprint quality and structural coherence.",
+    "",
+    `Requested Persona: ${requestedPersona}`,
+    "",
+    "Skeleton requirements:",
+    "1. persona_name must match requested persona exactly.",
+    "2. Provide target_word and exactly 5 forbidden_words.",
+    "3. Provide persona_voice_notes (2-4 short notes).",
+    "4. Provide clue_blueprint with clue_id, clue_type, clue_intent, required_sections.",
+    "5. Provide manual_blueprint counts for each section.",
+    "6. Provide solution_hint with identity_hint and target_hint.",
+    "",
+    "Return this JSON schema exactly:",
+    JSON.stringify(roundOneSkeletonSchema, null, 2)
+  ].join("\n");
+}
+
+function buildRoundOneExpansionPrompt(input = {}, skeleton = {}) {
+  const requestedPersona = getRequestedPersona(input);
+
+  return [
+    "You are expanding a Round 1 deduction skeleton into a detailed final package.",
+    "Return JSON only.",
+    "Use the skeleton as the source of truth for identity, target, clue plan, and section sizing.",
+    "The output must be substantially more detailed than the skeleton.",
+    "",
+    `Requested Persona: ${requestedPersona}`,
+    "",
+    "Expansion rules:",
+    "1. Preserve skeleton intent and clue ids whenever possible.",
+    "2. Expand clues into actionable, multi-hop puzzle clues.",
+    "3. Expand manual into dense usable records across all sections.",
+    "4. Ensure decoder_walkthrough references clue ids and manual refs explicitly.",
+    "5. Keep all fields internally consistent and solvable.",
+    "",
+    "Skeleton JSON:",
+    JSON.stringify(skeleton, null, 2),
+    "",
+    "Final output must follow the provided response schema exactly."
   ].join("\n");
 }
 
@@ -590,10 +716,13 @@ module.exports = {
   ROUND_4_SETUP_PROMPT_TEMPLATE,
   ROUND_4_CHAT_SYSTEM_PROMPT_TEMPLATE,
   buildClueGeneratorPrompt,
+  buildRoundOneSkeletonPrompt,
+  buildRoundOneExpansionPrompt,
   buildRoundOneChatSystemPrompt,
   getClueGeneratorRoundConfig,
   buildTerminalValidatorPrompt,
   buildVillainSpeechPrompt,
+  roundOneSkeletonSchema,
   roundOneManualSchema,
   terminalValidatorSchema,
   villainSpeechSchema
