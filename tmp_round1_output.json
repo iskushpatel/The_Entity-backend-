@@ -1,0 +1,7 @@
+{
+    "room_id":  "AAAABK",
+    "status":  "failed",
+    "hidden_answer_candidate":  null,
+    "last_error":  "Gemini returned HTTP 400",
+    "response_payload_json":  null
+}

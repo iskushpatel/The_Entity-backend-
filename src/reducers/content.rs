@@ -1,4 +1,4 @@
-use serde_json::Value;
+use serde_json::{json, Value};
 use spacetimedb::{log, Identity, ReducerContext, Table};
 
 use crate::api::content_http::{
@@ -36,7 +36,7 @@ pub fn generate_clue_manual_for_room(
     let normalized_room_id = normalize_room_id(room_id)?;
     let room = load_room(ctx, &normalized_room_id)?;
     ensure_room_is_active(&room)?;
-    ensure_host_or_player_one(ctx.sender(), &room)?;
+    ensure_generation_room_access(&room)?;
 
     let normalized_round_key = normalize_round_key(&round_key)?;
     let normalized_payload_json =
@@ -119,7 +119,7 @@ pub fn generate_villain_speech_for_room(
     let normalized_room_id = normalize_room_id(room_id)?;
     let room = load_room(ctx, &normalized_room_id)?;
     ensure_room_is_active(&room)?;
-    ensure_room_participant(ctx.sender(), &room)?;
+    ensure_generation_room_access(&room)?;
 
     let payload_json = normalize_json_object("request_payload_json", request_payload_json)?;
     let payload_value: Value = serde_json::from_str(&payload_json)
@@ -309,7 +309,8 @@ pub fn _round_content_callback(
     }
 
     if callback.status_code != 200 {
-        let error_message = format!("Gemini returned HTTP {}", callback.status_code);
+        let error_message =
+            summarize_gemini_http_error(callback.status_code, &callback.response_body);
         request.phase = RoundGenerationPhase::Failed;
         request.error_message = Some(error_message.clone());
         request.updated_at = ctx.timestamp;
@@ -346,6 +347,8 @@ pub fn _round_content_callback(
     if request.round_key == "round_1" && request.phase == RoundGenerationPhase::PendingGeminiSkeleton {
         request.phase = RoundGenerationPhase::PendingGeminiExpansion;
         request.skeleton_payload_json = Some(response_payload_json.clone());
+        request.retries = Some(0);
+        request.error_message = None;
         request.updated_at = ctx.timestamp;
         ctx.db
             .round_generation_request()
@@ -357,10 +360,27 @@ pub fn _round_content_callback(
         return Ok(());
     }
 
-    let hidden_answer_candidate = extract_hidden_answer_candidate(&response_value);
+    let final_response_value = if request.round_key == "round_1"
+        && request.phase == RoundGenerationPhase::PendingGeminiExpansion
+    {
+        let skeleton_json = request.skeleton_payload_json.as_deref().ok_or_else(|| {
+            format!(
+                "round 1 expansion finished without a stored skeleton for request {}",
+                request.request_id
+            )
+        })?;
+        compose_round_one_final_payload(skeleton_json, response_value)?
+    } else {
+        response_value
+    };
+
+    let hidden_answer_candidate = extract_hidden_answer_candidate(&final_response_value);
+
+    let final_response_payload_json = serde_json::to_string(&final_response_value)
+        .map_err(|err| format!("failed to serialize final round content response: {err}"))?;
 
     request.phase = RoundGenerationPhase::Succeeded;
-    request.response_payload_json = Some(response_payload_json.clone());
+    request.response_payload_json = Some(final_response_payload_json.clone());
     request.hidden_answer_candidate = hidden_answer_candidate.clone();
     request.error_message = None;
     request.updated_at = ctx.timestamp;
@@ -370,7 +390,7 @@ pub fn _round_content_callback(
         .update(request.clone());
 
     artifact.status = GenerationStatus::Succeeded;
-    artifact.response_payload_json = Some(response_payload_json);
+    artifact.response_payload_json = Some(final_response_payload_json);
     artifact.hidden_answer_candidate = hidden_answer_candidate;
     if artifact.active_request_id == Some(request.request_id) {
         artifact.active_request_id = None;
@@ -522,6 +542,7 @@ pub fn _villain_speech_callback(
 
     if payload.synthesize_audio.unwrap_or(false) && voice_config_ready(ctx) {
         request.phase = VillainSpeechPhase::PendingTts;
+        request.retries = Some(0);
         request.updated_at = ctx.timestamp;
         ctx.db
             .villain_speech_request()
@@ -713,14 +734,38 @@ fn ensure_room_is_active(room: &crate::tables::state::GameRoom) -> Result<(), St
     }
 }
 
-fn ensure_host_or_player_one(_sender: Identity, _room: &crate::tables::state::GameRoom) -> Result<(), String> {
-    // Authorization logic bypassed as requested by user to remove complexities
+fn ensure_generation_room_access(room: &crate::tables::state::GameRoom) -> Result<(), String> {
+    if room.status == RoomStatus::Terminated {
+        return Err(format!("room {} has already been terminated", room.room_id));
+    }
+
+    // Maincloud anonymous HTTP setup flows can present a sender identity that does not line up
+    // with the identity persisted into room-scoped rows at creation time. For content generation,
+    // the room id itself is the capability boundary, so we keep access tied to room existence.
     Ok(())
 }
 
-fn ensure_room_participant(_sender: Identity, _room: &crate::tables::state::GameRoom) -> Result<(), String> {
-    // Authorization logic bypassed as requested by user to remove complexities
-    Ok(())
+fn ensure_host_or_player_one(
+    sender: Identity,
+    room: &crate::tables::state::GameRoom,
+) -> Result<(), String> {
+    if room.host_identity == sender || room.player_one == Some(sender) {
+        return Ok(());
+    }
+    Err("only the room host or Player 1 may generate clue/manual content".to_string())
+}
+
+fn ensure_room_participant(
+    sender: Identity,
+    room: &crate::tables::state::GameRoom,
+) -> Result<(), String> {
+    if room.host_identity == sender
+        || room.player_one == Some(sender)
+        || room.player_two == Some(sender)
+    {
+        return Ok(());
+    }
+    Err("only a room participant may generate villain speech".to_string())
 }
 
 fn normalize_room_id(room_id: String) -> Result<String, String> {
@@ -1009,7 +1054,20 @@ fn voice_config_ready(ctx: &ReducerContext) -> bool {
         .unwrap_or(false)
 }
 
-fn ensure_module_owner(_ctx: &ReducerContext) -> Result<(), String> {
+fn ensure_module_owner(ctx: &ReducerContext) -> Result<(), String> {
+    let owner = ctx
+        .db
+        .module_owner()
+        .owner_key()
+        .find(MODULE_OWNER_KEY)
+        .ok_or_else(|| {
+            "module owner is not initialized; republish with clear to run init reducer".to_string()
+        })?;
+
+    if owner.owner_identity != ctx.sender() {
+        return Err("only the module owner may call this reducer".to_string());
+    }
+
     Ok(())
 }
 
@@ -1019,4 +1077,87 @@ fn require_trimmed(label: &str, value: String) -> Result<String, String> {
         return Err(format!("{label} must not be empty"));
     }
     Ok(normalized)
+}
+
+fn summarize_gemini_http_error(status_code: u16, response_body: &str) -> String {
+    let snippet = serde_json::from_str::<Value>(response_body)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("error")
+                .and_then(Value::as_object)
+                .and_then(|error| error.get("message"))
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|message| !message.is_empty())
+                .map(ToString::to_string)
+        })
+        .or_else(|| {
+            let compact = response_body.split_whitespace().collect::<Vec<_>>().join(" ");
+            let trimmed = compact.trim();
+            if trimmed.is_empty() {
+                None
+            } else if trimmed.chars().count() > 280 {
+                Some(format!("{}...", trimmed.chars().take(280).collect::<String>()))
+            } else {
+                Some(trimmed.to_string())
+            }
+        });
+
+    match snippet {
+        Some(message) => format!("Gemini returned HTTP {status_code}: {message}"),
+        None => format!("Gemini returned HTTP {status_code}"),
+    }
+}
+
+fn compose_round_one_final_payload(
+    skeleton_json: &str,
+    expansion_value: Value,
+) -> Result<Value, String> {
+    let skeleton_value: Value = serde_json::from_str(skeleton_json)
+        .map_err(|err| format!("invalid stored round 1 skeleton JSON: {err}"))?;
+    let skeleton_object = skeleton_value
+        .as_object()
+        .ok_or_else(|| "round 1 skeleton payload must be a JSON object".to_string())?;
+    let expansion_object = expansion_value
+        .as_object()
+        .ok_or_else(|| "round 1 expansion payload must be a JSON object".to_string())?;
+
+    let manual = expansion_object
+        .get("manual")
+        .cloned()
+        .ok_or_else(|| "round 1 expansion payload is missing manual".to_string())?;
+    let decoder_walkthrough = expansion_object
+        .get("decoder_walkthrough")
+        .cloned()
+        .ok_or_else(|| "round 1 expansion payload is missing decoder_walkthrough".to_string())?;
+
+    Ok(json!({
+        "persona_name": skeleton_object
+            .get("persona_name")
+            .cloned()
+            .ok_or_else(|| "round 1 skeleton is missing persona_name".to_string())?,
+        "persona_paragraphs": skeleton_object
+            .get("persona_paragraphs")
+            .cloned()
+            .ok_or_else(|| "round 1 skeleton is missing persona_paragraphs".to_string())?,
+        "target_word": skeleton_object
+            .get("target_word")
+            .cloned()
+            .ok_or_else(|| "round 1 skeleton is missing target_word".to_string())?,
+        "forbidden_words": skeleton_object
+            .get("forbidden_words")
+            .cloned()
+            .ok_or_else(|| "round 1 skeleton is missing forbidden_words".to_string())?,
+        "clues": skeleton_object
+            .get("clues")
+            .cloned()
+            .ok_or_else(|| "round 1 skeleton is missing clues".to_string())?,
+        "manual": manual,
+        "decoder_walkthrough": decoder_walkthrough,
+        "solution": skeleton_object
+            .get("solution")
+            .cloned()
+            .ok_or_else(|| "round 1 skeleton is missing solution".to_string())?
+    }))
 }

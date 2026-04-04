@@ -65,74 +65,310 @@ pub fn normalize_round_key(round_key: &str) -> Result<String, String> {
 
 pub fn default_round_response_schema(round_key: &str) -> Result<Value, String> {
     match normalize_round_key(round_key)?.as_str() {
-        "round_1" => Ok(json!({
-            "type": "object",
-            "additionalProperties": false,
-            "properties": {
-                "persona_name": { "type": "string" },
-                "persona_paragraphs": {
-                    "type": "array",
-                    "minItems": 2,
-                    "maxItems": 3,
-                    "items": { "type": "string" }
-                },
-                "target_word": { "type": "string" },
-                "forbidden_words": {
-                    "type": "array",
-                    "minItems": 5,
-                    "maxItems": 5,
-                    "items": { "type": "string" }
-                },
-                "clues": {
-                    "type": "array",
-                    "minItems": 2,
-                    "maxItems": 2,
-                    "items": { "type": "object", "additionalProperties": true }
-                },
-                "manual": {
-                    "type": "object",
-                    "additionalProperties": false,
-                    "properties": {
-                        "codex_entries": { "type": "array", "minItems": 1, "maxItems": 1, "items": { "type": "object", "additionalProperties": true } },
-                        "timeline_fragments": { "type": "array", "minItems": 1, "maxItems": 1, "items": { "type": "object", "additionalProperties": true } },
-                        "cipher_legend": { "type": "array", "minItems": 1, "maxItems": 1, "items": { "type": "object", "additionalProperties": true } },
-                        "protocol_matrix": { "type": "array", "minItems": 1, "maxItems": 1, "items": { "type": "object", "additionalProperties": true } },
-                        "false_leads": { "type": "array", "minItems": 1, "maxItems": 1, "items": { "type": "object", "additionalProperties": true } }
-                    },
-                    "required": ["codex_entries", "timeline_fragments", "cipher_legend", "protocol_matrix", "false_leads"]
-                },
-                "decoder_walkthrough": {
-                    "type": "array",
-                    "minItems": 1,
-                    "items": { "type": "object", "additionalProperties": true }
-                },
-                "solution": {
-                    "type": "object",
-                    "additionalProperties": false,
-                    "properties": {
-                        "final_identity_guess": { "type": "string" },
-                        "final_target_word_inference": { "type": "string" }
-                    },
-                    "required": ["final_identity_guess", "final_target_word_inference"]
-                }
-            },
-            "required": [
-                "persona_name",
-                "persona_paragraphs",
-                "target_word",
-                "forbidden_words",
-                "clues",
-                "manual",
-                "decoder_walkthrough",
-                "solution"
-            ]
-        })),
+        "round_1" => Ok(round_one_final_response_schema()),
         "round_2" | "round_3" | "round_4" => Ok(json!({
             "type": "object",
             "additionalProperties": true
         })),
         _ => unreachable!(),
     }
+}
+
+fn round_one_clue_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "clue_id": { "type": "string" },
+            "clue_type": { "type": "string" },
+            "clue_text": { "type": "string" },
+            "required_manual_refs": {
+                "type": "array",
+                "items": { "type": "string" }
+            },
+            "expected_inference": { "type": "string" },
+            "difficulty": { "type": "string" }
+        },
+        "required": [
+            "clue_id",
+            "clue_type",
+            "clue_text",
+            "required_manual_refs",
+            "expected_inference",
+            "difficulty"
+        ]
+    })
+}
+
+fn round_one_walkthrough_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "step_id": { "type": "string" },
+            "clue_id": { "type": "string" },
+            "manual_refs_used": {
+                "type": "array",
+                "items": { "type": "string" }
+            },
+            "deduction": { "type": "string" }
+        },
+        "required": ["step_id", "clue_id", "manual_refs_used", "deduction"]
+    })
+}
+
+fn round_one_solution_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "final_identity_guess": { "type": "string" },
+            "final_target_word_inference": { "type": "string" }
+        },
+        "required": ["final_identity_guess", "final_target_word_inference"]
+    })
+}
+
+fn round_one_manual_section_blueprint_schema(id_key: &str) -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            id_key: { "type": "string" },
+            "title": { "type": "string" },
+            "purpose": { "type": "string" }
+        },
+        "required": [id_key, "title", "purpose"]
+    })
+}
+
+fn round_one_skeleton_response_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "persona_name": { "type": "string" },
+            "persona_paragraphs": {
+                "type": "array",
+                "items": { "type": "string" }
+            },
+            "target_word": { "type": "string" },
+            "forbidden_words": {
+                "type": "array",
+                "items": { "type": "string" }
+            },
+            "clues": {
+                "type": "array",
+                "items": round_one_clue_schema()
+            },
+            "manual_blueprint": {
+                "type": "object",
+                "properties": {
+                    "overview": { "type": "string" },
+                    "codex_entries": {
+                        "type": "array",
+                        "items": round_one_manual_section_blueprint_schema("entry_id")
+                    },
+                    "timeline_fragments": {
+                        "type": "array",
+                        "items": round_one_manual_section_blueprint_schema("fragment_id")
+                    },
+                    "cipher_legend": {
+                        "type": "array",
+                        "items": round_one_manual_section_blueprint_schema("cipher_id")
+                    },
+                    "protocol_matrix": {
+                        "type": "array",
+                        "items": round_one_manual_section_blueprint_schema("protocol_id")
+                    },
+                    "false_leads": {
+                        "type": "array",
+                        "items": round_one_manual_section_blueprint_schema("lead_id")
+                    }
+                },
+                "required": [
+                    "overview",
+                    "codex_entries",
+                    "timeline_fragments",
+                    "cipher_legend",
+                    "protocol_matrix",
+                    "false_leads"
+                ]
+            },
+            "solution": round_one_solution_schema()
+        },
+        "required": [
+            "persona_name",
+            "persona_paragraphs",
+            "target_word",
+            "forbidden_words",
+            "clues",
+            "manual_blueprint",
+            "solution"
+        ]
+    })
+}
+
+fn round_one_manual_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "overview": { "type": "string" },
+            "codex_entries": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "entry_id": { "type": "string" },
+                        "domain": { "type": "string" },
+                        "term": { "type": "string" },
+                        "content": { "type": "string" },
+                        "relevance_tags": {
+                            "type": "array",
+                            "items": { "type": "string" }
+                        }
+                    },
+                    "required": ["entry_id", "domain", "term", "content", "relevance_tags"]
+                }
+            },
+            "timeline_fragments": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "fragment_id": { "type": "string" },
+                        "timestamp_hint": { "type": "string" },
+                        "event_summary": { "type": "string" },
+                        "detail_text": { "type": "string" },
+                        "linked_entities": {
+                            "type": "array",
+                            "items": { "type": "string" }
+                        }
+                    },
+                    "required": [
+                        "fragment_id",
+                        "timestamp_hint",
+                        "event_summary",
+                        "detail_text",
+                        "linked_entities"
+                    ]
+                }
+            },
+            "cipher_legend": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "cipher_id": { "type": "string" },
+                        "symbol_or_pattern": { "type": "string" },
+                        "decoding_rule": { "type": "string" },
+                        "expanded_note": { "type": "string" },
+                        "example": { "type": "string" }
+                    },
+                    "required": [
+                        "cipher_id",
+                        "symbol_or_pattern",
+                        "decoding_rule",
+                        "expanded_note",
+                        "example"
+                    ]
+                }
+            },
+            "protocol_matrix": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "protocol_id": { "type": "string" },
+                        "trigger_condition": { "type": "string" },
+                        "prescribed_action": { "type": "string" },
+                        "hidden_implication": { "type": "string" },
+                        "detail_text": { "type": "string" }
+                    },
+                    "required": [
+                        "protocol_id",
+                        "trigger_condition",
+                        "prescribed_action",
+                        "hidden_implication",
+                        "detail_text"
+                    ]
+                }
+            },
+            "false_leads": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "lead_id": { "type": "string" },
+                        "misleading_claim": { "type": "string" },
+                        "why_it_looks_valid": { "type": "string" },
+                        "why_it_is_wrong": { "type": "string" }
+                    },
+                    "required": [
+                        "lead_id",
+                        "misleading_claim",
+                        "why_it_looks_valid",
+                        "why_it_is_wrong"
+                    ]
+                }
+            }
+        },
+        "required": [
+            "overview",
+            "codex_entries",
+            "timeline_fragments",
+            "cipher_legend",
+            "protocol_matrix",
+            "false_leads"
+        ]
+    })
+}
+
+fn round_one_expansion_response_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "manual": round_one_manual_schema(),
+            "decoder_walkthrough": {
+                "type": "array",
+                "items": round_one_walkthrough_schema()
+            }
+        },
+        "required": ["manual", "decoder_walkthrough"]
+    })
+}
+
+fn round_one_final_response_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "persona_name": { "type": "string" },
+            "persona_paragraphs": {
+                "type": "array",
+                "items": { "type": "string" }
+            },
+            "target_word": { "type": "string" },
+            "forbidden_words": {
+                "type": "array",
+                "items": { "type": "string" }
+            },
+            "clues": {
+                "type": "array",
+                "items": round_one_clue_schema()
+            },
+            "manual": round_one_manual_schema(),
+            "decoder_walkthrough": {
+                "type": "array",
+                "items": round_one_walkthrough_schema()
+            },
+            "solution": round_one_solution_schema()
+        },
+        "required": [
+            "persona_name",
+            "persona_paragraphs",
+            "target_word",
+            "forbidden_words",
+            "clues",
+            "manual",
+            "decoder_walkthrough",
+            "solution"
+        ]
+    })
 }
 
 #[spacetimedb::procedure]
@@ -384,13 +620,14 @@ fn build_round_content_http_request(
 
     let prompt = build_round_generation_prompt(request)?;
     let max_tokens = round_generation_max_output_tokens(request);
+    let response_schema = round_generation_response_schema(request)?;
 
     build_gemini_request(
         &config.gemini_api_base_url,
         &config.gemini_api_key,
         &config.gemini_clue_generator_model,
         prompt,
-        None,
+        response_schema,
         round_generation_temperature(request),
         max_tokens,
     )
@@ -522,12 +759,35 @@ fn build_gemini_request(
         .map_err(|err| format!("failed to build Gemini HTTP request: {err}"))
 }
 
+fn round_generation_response_schema(request: &RoundGenerationRequest) -> Result<Option<Value>, String> {
+    match request.round_key.as_str() {
+        "round_1" => match request.phase {
+            RoundGenerationPhase::PendingGeminiSkeleton => Ok(Some(round_one_skeleton_response_schema())),
+            RoundGenerationPhase::PendingGeminiExpansion => Ok(Some(round_one_expansion_response_schema())),
+            RoundGenerationPhase::Failed | RoundGenerationPhase::Succeeded => {
+                Ok(Some(load_request_response_schema(request)?))
+            }
+        },
+        "round_2" | "round_3" | "round_4" => Ok(Some(load_request_response_schema(request)?)),
+        _ => Ok(None),
+    }
+}
+
+fn load_request_response_schema(request: &RoundGenerationRequest) -> Result<Value, String> {
+    serde_json::from_str(&request.response_schema_json).map_err(|err| {
+        format!(
+            "failed to parse stored response schema for round {}: {err}",
+            request.round_key
+        )
+    })
+}
+
 fn round_generation_temperature(request: &RoundGenerationRequest) -> f32 {
     match request.round_key.as_str() {
         "round_1" => match request.phase {
-            RoundGenerationPhase::PendingGeminiSkeleton => 0.95,
-            RoundGenerationPhase::PendingGeminiExpansion => 0.65,
-            _ => 0.65,
+            RoundGenerationPhase::PendingGeminiSkeleton => 0.65,
+            RoundGenerationPhase::PendingGeminiExpansion => 0.72,
+            _ => 0.72,
         },
         "round_2" => 0.8,
         "round_3" => 0.75,
@@ -539,9 +799,9 @@ fn round_generation_temperature(request: &RoundGenerationRequest) -> f32 {
 fn round_generation_max_output_tokens(request: &RoundGenerationRequest) -> u32 {
     match request.round_key.as_str() {
         "round_1" => match request.phase {
-            RoundGenerationPhase::PendingGeminiSkeleton => 2000,
-            RoundGenerationPhase::PendingGeminiExpansion => 3500,
-            _ => 3500,
+            RoundGenerationPhase::PendingGeminiSkeleton => 4500,
+            RoundGenerationPhase::PendingGeminiExpansion => 6500,
+            _ => 6500,
         },
         "round_2" => 2200,
         "round_3" => 2200,
@@ -617,28 +877,50 @@ fn build_round_one_skeleton_prompt(payload_value: &Value) -> Result<String, Stri
 
     Ok([
         "Role & Objective:",
-        "You are an expert game designer creating an asymmetrical deduction game. Generate a Skeleton for the requested character persona.",
+        "You are the skeleton extraction agent for Round 1 of an asymmetrical deduction game.",
+        "Your job is to freeze the puzzle structure so a later expansion agent can spend almost all of its output budget on the manual itself.",
+        "Return JSON only.",
         "",
         "Requested Persona:",
         requested_persona,
         "",
-        "Task Details:",
+        "Skeleton tasks:",
         "",
         "persona_name: Repeat the exact requested persona.",
+        "",
+        "persona_paragraphs: Write exactly 2 evocative paragraphs in the persona voice so Player 1 can identify who is speaking.",
+        "Keep each paragraph tight and atmospheric rather than long.",
         "",
         "target_word: Select a highly specific noun associated with this persona's lore or methods.",
         "",
         "forbidden_words: List exactly 5 words that are the most obvious clues or synonyms for the target_word.",
         "",
-        "clue_concepts: Generate exactly 4 short concepts/ideas for clues. Do not write the full clues.",
+        "clues: Generate exactly 4 compact final clue objects now. Each clue must already contain clue_id, clue_type, clue_text, required_manual_refs, expected_inference, and difficulty.",
+        "Each clue_text should be short, concrete, and no longer than 2 sentences.",
+        "Use stable manual reference ids with these prefixes only: cx_ for codex_entries, tl_ for timeline_fragments, lg_ for cipher_legend, pm_ for protocol_matrix, fl_ for false_leads.",
+        "required_manual_refs must point to ids that will also exist in manual_blueprint.",
         "",
-        "manual_structure: Outline the structure of a large manual with many sections (codex_entries, timeline_fragments, cipher_legend, protocol_matrix, false_leads). Give a brief 1 sentence description of the overall theme and how distractors will function to hide the true clues.",
-        "",
-        "decoder_walkthrough_skeleton: Provide a logical flow mapping the 4 clues to sections in the manual that would allow deducing the target word.",
+        "manual_blueprint: Plan the entire manual, but do not write the long descriptive content yet.",
+        "manual_blueprint.overview should be a short paragraph explaining the document theme and how distractors obscure the real solution.",
+        "manual_blueprint must contain concrete placeholder records for every section with ids, titles, and purposes:",
+        "- codex_entries: exactly 5 records using entry_id",
+        "- timeline_fragments: exactly 3 records using fragment_id",
+        "- cipher_legend: exactly 3 records using cipher_id",
+        "- protocol_matrix: exactly 4 records using protocol_id",
+        "- false_leads: exactly 2 records using lead_id",
+        "Keep each title to a few words and each purpose to one short sentence.",
         "",
         "solution: Provide final_identity_guess and final_target_word_inference.",
         "",
-        "Return JSON strictly following these keys: persona_name, target_word, forbidden_words, clue_concepts, manual_structure, decoder_walkthrough_skeleton, solution.",
+        "Absolute constraints:",
+        "1. Do not use the persona_name, target_word, or forbidden_words inside persona_paragraphs.",
+        "2. Keep the skeleton lean: no long manual prose yet.",
+        "3. Keep all ids and clue references internally consistent.",
+        "4. The later expansion agent will inherit this skeleton as source of truth, so do not leave placeholders vague.",
+        "5. Favor compact phrasing over flourish in this phase; the expansion phase handles depth.",
+        "",
+        "Additional payload JSON:",
+        &serde_json::to_string_pretty(payload_value).unwrap_or_else(|_| "{}".to_string()),
     ]
     .join("\n"))
 }
@@ -649,7 +931,10 @@ fn build_round_one_expansion_prompt(payload_value: &Value, skeleton_json: Option
 
     Ok([
         "Role & Objective:",
-        "You are an expert game designer. Below is a Skeleton for a deduction game round. Expand this skeleton into the final full version.",
+        "You are the manual expansion agent for Round 1 of an asymmetrical deduction game.",
+        "A previous agent already froze the identity, the target word, the clue set, the record ids, and the solution path.",
+        "Your job is only to write the large descriptive manual and the finished decoder walkthrough.",
+        "Return JSON only.",
         "",
         "Requested Persona:",
         requested_persona,
@@ -657,52 +942,34 @@ fn build_round_one_expansion_prompt(payload_value: &Value, skeleton_json: Option
         "Skeleton Context:",
         skeleton,
         "",
-        "Task Details:",
+        "Expansion tasks:",
         "",
-        "persona_name: Keep from skeleton.",
+        "Output only these top-level keys: manual, decoder_walkthrough.",
+        "Do not rewrite persona_name, persona_paragraphs, target_word, forbidden_words, clues, or solution. The server will merge those from the skeleton phase.",
         "",
-        "target_word: Keep from skeleton.",
+        "The manual JSON must preserve these record fields exactly:",
+        "- codex_entries: entry_id, domain, term, content, relevance_tags",
+        "- timeline_fragments: fragment_id, timestamp_hint, event_summary, detail_text, linked_entities",
+        "- cipher_legend: cipher_id, symbol_or_pattern, decoding_rule, expanded_note, example",
+        "- protocol_matrix: protocol_id, trigger_condition, prescribed_action, hidden_implication, detail_text",
+        "- false_leads: lead_id, misleading_claim, why_it_looks_valid, why_it_is_wrong",
+        "- decoder_walkthrough: step_id, clue_id, manual_refs_used, deduction",
         "",
-        "forbidden_words: Keep from skeleton.",
+        "Manual writing rules:",
+        "1. Expand every blueprint record into a full descriptive record using the exact ids from the skeleton.",
+        "2. The manual must feel like a large, in-world reference document with layered detail, not a terse data table.",
+        "3. Hide the useful signal inside plausible but readable distractor material.",
+        "4. codex_entries.content should usually be 1 to 2 substantial paragraphs.",
+        "5. timeline_fragments.detail_text should add rich context beyond the summary in roughly 4 to 6 sentences.",
+        "6. cipher_legend.expanded_note should clearly explain the symbol system in roughly 3 to 5 sentences while still leaving room for interpretation pressure.",
+        "7. protocol_matrix.detail_text should sound operational and specific in roughly 4 to 6 sentences.",
+        "8. false_leads must be convincing enough to slow the players down before they discard them.",
+        "9. decoder_walkthrough must map each clue_id to the exact manual_refs_used and a precise deduction.",
+        "10. Preserve all clue ids and manual ids exactly as provided by the skeleton.",
+        "11. Stay dense and informative, but do not bloat the prose with repetition or extra scenes outside the supplied outline.",
         "",
-        "persona_paragraphs: Write 2 to 3 paragraphs written in the distinct voice of this persona. The primary goal of these paragraphs is to act as a riddle so Player 1 can deduce WHO is speaking.",
-        "",
-        "clues: Generate exactly 4 clues based on clue_concepts in skeleton. Each clue must include clue_id, clue_type, clue_text, required_manual_refs, expected_inference, and difficulty.",
-        "",
-        "manual: Expand the manual_structure into detailed content with these sections. It must be a large document with many details where the real answers are hidden among many distractors. Output must be a JSON array of strings or formatted text for each section:",
-        "- codex_entries: generate a single massive, highly detailed narrative report spanning 4-5 paragraphs filled with dense lore, distractors, and the real answer.",
-        "- timeline_fragments: generate 1 precise timeline record.",
-        "- cipher_legend: generate detailed rules with 1 complex cipher.",
-        "- protocol_matrix: generate 1 detailed operational rule.",
-        "- false_leads: generate 1 highly plausible red herring paragraph.",
-        "",
-        "decoder_walkthrough: Provide exact deduction steps mapping each clue_id to manual_refs_used.",
-        "",
-        "solution: Keep from skeleton.",
-        "",
-        "ABSOLUTE CONSTRAINTS:",
-        "",
-        "DO NOT use the persona_name (or any direct aliases) in the paragraphs.",
-        "",
-        "DO NOT use the target_word anywhere in the paragraphs.",
-        "",
-        "DO NOT use ANY of the 5 forbidden_words anywhere in the paragraphs.",
-        "",
-        "The final output MUST be pure JSON matching the standard final clue and manual structure for Round 1.",
-        "",
-        "Make the persona's identity guessable through their tone, philosophy, and subtle lore hints.",
-        "The clues must be non-trivial and at least half must require combining two or more manual sections.",
-        "Keep each persona paragraph around 80 words.",
-        "The manual sections should contain many paragraphs of details to act as distractors where the real clues are hidden.",
-        "Output JSON key order should be: persona_name, persona_paragraphs, target_word, forbidden_words, clues, manual, decoder_walkthrough, solution.",
-        "",
-        "Output rules:",
-        "1. Return JSON only.",
-        "2. Follow schema exactly.",
-        "3. persona_name must exactly match the requested persona string.",
-        "4. target_word must be a single noun.",
-        "5. forbidden_words must contain exactly 5 distinct words.",
-        "6. persona_paragraphs must contain 2 or 3 full paragraphs in the persona voice.",
+        "Quality target:",
+        "Spend the token budget on depth, specificity, and descriptive texture in the manual. Do not compress the manual into one-line records.",
         "",
         "Additional payload JSON:",
         &serde_json::to_string_pretty(payload_value).unwrap_or_else(|_| "{}".to_string()),
