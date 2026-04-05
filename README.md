@@ -1,5 +1,6 @@
 # The Entity Backend
-
+## Demo video
+<video controls src="entity-final.mp4" title="Title"></video>
 SpacetimeDB backend for a room-based multiplayer puzzle game.
 
 This project is implemented in Rust and compiled to WASM for the SpacetimeDB runtime. It currently provides:
