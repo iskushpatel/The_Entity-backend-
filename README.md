@@ -1,15 +1,16 @@
 # The Entity Backend
 
-Rust + SpacetimeDB backend for an asymmetric multiplayer horror puzzle game with:
+SpacetimeDB backend for a room-based multiplayer puzzle game.
+
+This project is implemented in Rust and compiled to WASM for the SpacetimeDB runtime. It currently provides:
 
 - room creation and join flow
-- a live persona-driven terminal for Player 1
-- async ArmorIQ intent validation
-- Gemini-powered clue/manual generation
-- Gemini + ElevenLabs villain speech generation
+- public room and game state tables for clients
+- a persona-driven terminal flow for Player 1
+- ArmorIQ validation before Gemini terminal turns
+- room-scoped clue/manual generation
+- room-scoped villain speech generation
 - an 8-minute room timer that starts when Player 2 joins
-
-The backend is designed to run as a SpacetimeDB module compiled to WASM. A small optional local relay is included for local development and smoke testing.
 
 ## Live Deployment
 
@@ -17,40 +18,70 @@ The backend is designed to run as a SpacetimeDB module compiled to WASM. A small
 - HTTP base: [https://maincloud.spacetimedb.com/v1/database/the-entity-ty5fs](https://maincloud.spacetimedb.com/v1/database/the-entity-ty5fs)
 - WebSocket subscribe: `wss://maincloud.spacetimedb.com/v1/database/the-entity-ty5fs/subscribe`
 
-All reducer calls use:
+Reducer calls use:
 
 ```text
 POST /v1/database/the-entity-ty5fs/call/<reducer_name>
 ```
 
-## Core Features
+## What Is Implemented
 
-- Room lifecycle
-  - `initiate_room`
-  - `join_room`
-  - `terminate_room`
-- Public room/game state for clients
-  - `game_room`
-  - `room_ticket`
-  - `game_state`
-- Terminal round setup
-  - persona name
-  - persona prompt
-  - clue sequence
-  - forbidden words
-  - kill phrase fragment
-- Terminal turn flow
-  - local forbidden-word strike check
-  - ArmorIQ validation
-  - Gemini persona reply
-  - round completion if the AI says the fragment
-- Content generation
-  - room-scoped clue/manual generation
-  - room-scoped villain speech generation
-- Match timer
-  - starts automatically when Player 2 joins
-  - 480000 ms duration
-  - stored in public state for Android countdown rendering
+### Room Flow
+
+- `initiate_room`
+- `join_room`
+- `terminate_room`
+- `ping_room_ticket`
+
+When Player 2 joins:
+
+- the room becomes ready
+- the match timer starts
+- timer fields are written into public state
+
+### Terminal Flow
+
+- `configure_terminal_round_for_room`
+- `submit_terminal_for_room`
+- `set_hidden_answer_for_room`
+
+Behavior implemented in the terminal flow:
+
+- persona setup from JSON payload
+- immediate intro line after configuration
+- forbidden-word strike tracking
+- death after max strikes
+- ArmorIQ validation before Gemini turn generation
+- Gemini terminal response stored in public `game_state`
+- timeout guard during terminal flow
+
+### Content Generation
+
+- `generate_clue_manual_for_room`
+- `generate_villain_speech_for_room`
+- `configure_voice_integrations`
+
+These reducers write their results into:
+
+- `round_content_artifact`
+- `villain_speech_artifact`
+
+### Timer
+
+The timer is implemented as public state plus a scheduled timeout callback.
+
+Current duration:
+
+- `480000` milliseconds
+- 8 minutes
+
+Timeout state is exposed in `game_state` so Android can render countdown UI.
+
+## Current Scope Notes
+
+- The terminal setup accepts `round_1` through `round_4`.
+- Round-scoped content generation exists, but the most complete prompt/schema path is Round 1.
+- The backend includes an optional local relay for development, but the live Maincloud backend runs without needing that relay.
 
 ## Project Structure
 
@@ -62,9 +93,9 @@ src/
   models/
     api_schemas.rs
   reducers/
+    content.rs
     room.rs
     terminal.rs
-    content.rs
   tables/
     state.rs
 scripts/
@@ -81,10 +112,10 @@ docs/
 ## Tech Stack
 
 - Rust 2021
-- `spacetimedb = 2.1.0`
+- SpacetimeDB `2.1.0`
 - `serde`
 - `serde_json`
-- optional Node relay for local development
+- optional Node-based relay for local testing
 
 ## Local Development
 
@@ -95,7 +126,7 @@ docs/
 - SpacetimeDB CLI
 - Node.js if you want to run the local relay
 
-### Install toolchain
+### Install tools
 
 ```powershell
 iwr https://windows.spacetimedb.com -UseBasicParsing | iex
@@ -110,9 +141,7 @@ cd C:\Users\HP\Desktop\The_Entity-backend-
 & "$env:USERPROFILE\.cargo\bin\cargo.exe" check --target wasm32-unknown-unknown
 ```
 
-### Local relay
-
-The relay is optional and mainly useful for local mock/live testing outside Maincloud.
+### Optional local relay
 
 ```powershell
 cd C:\Users\HP\Desktop\The_Entity-backend-
@@ -125,7 +154,7 @@ npm run relay:start
 
 Template file: [.env.example](C:\Users\HP\Desktop\The_Entity-backend-\.env.example)
 
-Important keys:
+Important values used by this project:
 
 - `GEMINI_API_KEY`
 - `GEMINI_EXPANSION_API_KEY`
@@ -141,7 +170,7 @@ Do not commit `.env`.
 
 Script: [publish-maincloud.ps1](C:\Users\HP\Desktop\The_Entity-backend-\scripts\publish-maincloud.ps1)
 
-### One-time login
+### Login
 
 ```powershell
 spacetime login
@@ -166,30 +195,24 @@ powershell -ExecutionPolicy Bypass -File scripts\publish-maincloud.ps1 -SkipChec
 ### Room
 
 - `initiate_room(villain_name: Option<String>)`
-  - creates a room and room-scoped `game_state`
 - `join_room(room_id: String)`
-  - adds Player 2
-  - starts the 8-minute timer
 - `terminate_room(room_id: String)`
-  - host terminates room
 - `ping_room_ticket()`
-  - refreshes the caller’s `room_ticket`
 
 ### Terminal
 
 - `configure_terminal_round_for_room(room_id: String, setup_payload_json: String)`
-  - stores persona, clues, forbidden words, kill phrase fragment, strike limits
-  - writes the opening terminal line into `game_state.last_terminal_reply`
 - `submit_terminal_for_room(room_id: String, input: String)`
-  - runs the terminal turn flow
 - `set_hidden_answer_for_room(room_id: String, hidden_answer: String)`
-  - admin reducer for the room secret
 - `configure_integrations(...)`
-  - stores ArmorIQ + Gemini backend config
 - `configure_terminal_gemini(gemini_terminal_api_key: String, gemini_terminal_model: String)`
-  - optional terminal-only Gemini override
 - `configure_armoriq_upstream(...)`
-  - optional explicit ArmorIQ token issuance config
+
+Legacy singleton reducers also exist:
+
+- `configure_terminal_round`
+- `submit_terminal`
+- `set_hidden_answer`
 
 ### Content
 
@@ -197,13 +220,13 @@ powershell -ExecutionPolicy Bypass -File scripts\publish-maincloud.ps1 -SkipChec
 - `generate_villain_speech_for_room(room_id: String, request_payload_json: String)`
 - `configure_voice_integrations(...)`
 
-Internal callback reducers exist but should not be called by clients directly.
+Internal callback reducers exist, but clients should not call them directly.
 
 ## Public Tables Clients Should Read
 
 ### `game_room`
 
-Use for room metadata:
+Room metadata:
 
 - `room_id`
 - `game_id`
@@ -217,7 +240,7 @@ Use for room metadata:
 
 ### `room_ticket`
 
-Use for “what room am I in?”:
+Used to discover the caller's latest room:
 
 - `owner_identity`
 - `room_id`
@@ -225,7 +248,7 @@ Use for “what room am I in?”:
 
 ### `game_state`
 
-This is the main client-facing runtime state.
+Main client-facing runtime state.
 
 Important terminal fields:
 
@@ -252,21 +275,32 @@ Important timer fields:
 
 ### `round_content_artifact`
 
-Use for generated clue/manual payloads.
+Generated clue/manual output:
+
+- `status`
+- `request_payload_json`
+- `response_payload_json`
+- `hidden_answer_candidate`
+- `last_error`
 
 ### `villain_speech_artifact`
 
-Use for villain speech text and optional synthesized audio metadata.
+Generated villain speech output:
+
+- `status`
+- `speech_cues_json`
+- `selected_cue_id`
+- `selected_speech_text`
+- `audio_base64`
+- `mime_type`
+- `last_error`
 
 ## Timer Behavior
 
-- The match timer starts only when Player 2 joins.
-- Timer duration is `480000` milliseconds.
-- The backend stores both:
-  - start time
-  - deadline time
-- Android should use `timer_deadline_at_ms` as the authoritative countdown target.
-- When the timer expires before all rounds are cleared:
+- The timer starts when Player 2 joins.
+- Duration is `480000` milliseconds.
+- Android should treat `timer_deadline_at_ms` as the authoritative deadline.
+- If time expires before the game is cleared:
   - `game_state.is_game_disqualified = true`
   - `game_state.timer_remaining_ms = 0`
   - `game_state.disqualified_at_ms` is set
@@ -284,7 +318,7 @@ remainingMs = max(0, timer_deadline_at_ms - System.currentTimeMillis())
 
 Call `configure_terminal_round_for_room`.
 
-Example reducer body:
+Example body:
 
 ```json
 [
@@ -293,17 +327,19 @@ Example reducer body:
 ]
 ```
 
-What happens:
+What this does:
 
-- round state is stored in `terminal_round_state`
-- the boot line is written to `game_state.last_terminal_reply`
-- no player input is required for the intro line
+- stores terminal round state
+- stores clue sequence
+- stores forbidden words
+- stores the kill phrase fragment
+- writes the opening terminal line to `game_state.last_terminal_reply`
 
-### 2. Submit a terminal turn
+### 2. Submit a player turn
 
 Call `submit_terminal_for_room`.
 
-Example reducer body:
+Example body:
 
 ```json
 [
@@ -312,58 +348,30 @@ Example reducer body:
 ]
 ```
 
-Turn behavior:
+Turn path:
 
-1. local forbidden-word check
+1. forbidden-word check
 2. ArmorIQ validation
-3. Gemini persona reply
-4. clue progression update
-5. round completion check if the AI says the kill phrase fragment
+3. Gemini terminal turn
+4. terminal reply stored in `game_state`
 
 ### 3. Read terminal output
 
 Do not expect the reducer response body to contain the spoken line.
 
-Read `game_state.last_terminal_reply`.
+Read:
 
-Recommended Android read model:
+- `game_state.last_terminal_reply`
+- `game_state.last_terminal_message`
+- `game_state.terminal_status`
 
-```json
-{
-  "room_id": "AAAABC",
-  "game_id": 10123,
-  "round_key": "round_1",
-  "persona_name": "1920s Detective",
-  "status": "succeeded",
-  "processing": false,
-  "reply": {
-    "speaker": "terminal",
-    "text": "That witness gave me a neat story, but neat stories are often lies with polished shoes.",
-    "summary": "1920s Detective resists. Next clue primed: r1_c2."
-  },
-  "progress": {
-    "revealed_clue_count": 1,
-    "completed_rounds": 0
-  },
-  "strikes": {
-    "current": 0,
-    "max": 3,
-    "is_dead": false
-  },
-  "timer": {
-    "timer_started_at_ms": 1775339000000,
-    "timer_deadline_at_ms": 1775339180000,
-    "timer_remaining_ms": 172430,
-    "is_game_disqualified": false
-  }
-}
-```
+## Content Generation
 
-## Clue / Manual Generation
+### Clue / Manual
 
 Use `generate_clue_manual_for_room`.
 
-Example request:
+Example body:
 
 ```json
 [
@@ -374,19 +382,13 @@ Example request:
 ]
 ```
 
-The backend currently uses a staged generation flow for richer results:
-
-1. Gemini skeleton extraction
-2. Gemini expansion
-3. merge into final artifact row
-
 Read the result from `round_content_artifact.response_payload_json`.
 
-## Villain Speech Generation
+### Villain Speech
 
 Use `generate_villain_speech_for_room`.
 
-Example request:
+Example body:
 
 ```json
 [
@@ -395,17 +397,13 @@ Example request:
 ]
 ```
 
-Read the result from:
-
-- `villain_speech_artifact.speech_cues_json`
-- `villain_speech_artifact.audio_base64`
-- `villain_speech_artifact.mime_type`
+Read the result from `villain_speech_artifact`.
 
 ## Postman Notes
 
 - Reducer calls use `Content-Type: application/json`
 - SQL reads use `Content-Type: text/plain`
-- Reducer bodies are JSON arrays, not objects
+- Reducer bodies are JSON arrays
 
 Example SQL read:
 
@@ -415,33 +413,33 @@ select * from game_state
 
 ## Authentication Notes
 
-There are two different token concepts:
+Two different token types are commonly used:
 
 - `spacetime-identity-token`
-  - returned from gameplay reducer calls
-  - use this for player-scoped calls
+  - returned from gameplay calls
+  - used for player-scoped reducer calls
 - owner token
-  - obtained via `spacetime login show --token`
-  - use this for admin reducers like `configure_integrations`
+  - obtained with `spacetime login show --token`
+  - used for admin reducers such as `configure_integrations`
 
 ## Android Integration Notes
 
 Recommended client flow:
 
 1. call `initiate_room`
-2. read `room_ticket` or `game_room` to get `room_id`
+2. read `room_ticket` or `game_room`
 3. Player 2 calls `join_room`
 4. read `game_room.game_id`
-5. configure the terminal round
+5. configure terminal round
 6. subscribe to or poll `game_state`
 7. render:
    - `last_terminal_reply`
-   - strike counters
+   - strike count
    - timer fields
 8. submit terminal turns with `submit_terminal_for_room`
-9. read `round_content_artifact` and `villain_speech_artifact` for generation flows
+9. read generation artifacts when needed
 
-For a smooth countdown, compute time locally from `timer_deadline_at_ms`.
+For a smooth countdown, compute remaining time locally from `timer_deadline_at_ms`.
 
 ## Useful Commands
 
@@ -472,7 +470,7 @@ npm run relay:start
 
 ## Notes
 
-- The backend is optimized around SpacetimeDB’s synchronous reducer model plus scheduled callback flow.
-- HTTP work is done through scheduled procedures and reducer callbacks, not async/await inside reducers.
-- Timer state is public so Android can render it without reconstructing server logic.
-- The terminal writes its spoken output into `game_state.last_terminal_reply`.
+- The backend uses SpacetimeDB reducers plus scheduled callbacks for remote work.
+- HTTP work is not done with async/await inside reducers.
+- Timer state is public so Android can render it directly.
+- Terminal speech is written into `game_state.last_terminal_reply`.
