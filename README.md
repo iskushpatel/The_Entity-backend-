@@ -19,6 +19,10 @@ This project is implemented in Rust and compiled to WASM for the SpacetimeDB run
 - HTTP base: [https://maincloud.spacetimedb.com/v1/database/the-entity-ty5fs](https://maincloud.spacetimedb.com/v1/database/the-entity-ty5fs)
 - WebSocket subscribe: `wss://maincloud.spacetimedb.com/v1/database/the-entity-ty5fs/subscribe`
 
+## Related Repository
+
+- Android frontend: [techsavvy185/the-entity](https://github.com/techsavvy185/the-entity/)
+
 Reducer calls use:
 
 ```text
