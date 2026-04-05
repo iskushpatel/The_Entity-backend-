@@ -5,17 +5,20 @@ use crate::models::api_schemas::{
     ArmorIqResponse, GeminiTerminalTurnResponse, TerminalClueLine, TerminalConversationMessage,
     TerminalRoundSetupPayload,
 };
-use crate::reducers::room::resolve_room_game_id;
+use crate::reducers::room::{refresh_timer_snapshot, resolve_room_game_id, timestamp_millis};
 use crate::tables::state::{
-    armoriq_callback_schedule, game_secret, game_state, gemini_validator_callback_schedule,
-    module_owner, server_config, terminal_request, terminal_round_state, ArmoriqCallbackSchedule,
-    GameSecret, GameState, GeminiValidatorCallbackSchedule, ModuleOwner, ServerConfig,
-    TerminalRequest, TerminalRequestPhase, TerminalRoundState, TerminalStatus,
-    ACTIVE_SERVER_CONFIG_KEY, DEFAULT_GAME_ID, MODULE_OWNER_KEY,
+    armoriq_callback_schedule, game_room, game_secret, game_state,
+    gemini_validator_callback_schedule, module_owner, server_config, terminal_request,
+    terminal_round_state, ArmoriqCallbackSchedule, GameSecret, GameState,
+    GeminiValidatorCallbackSchedule, ModuleOwner, RoomStatus, ServerConfig, TerminalRequest,
+    TerminalRequestPhase, TerminalRoundState, TerminalStatus, ACTIVE_SERVER_CONFIG_KEY,
+    DEFAULT_GAME_ID, MODULE_OWNER_KEY,
 };
 
 const MAX_ROUNDS: u32 = 4;
 const MAX_CONVERSATION_MESSAGES: usize = 16;
+const MALFORMED_GEMINI_TERMINAL_RETRY_MARKER: &str =
+    "Retrying after malformed Gemini terminal JSON";
 
 #[spacetimedb::reducer(init)]
 pub fn init(ctx: &ReducerContext) {
@@ -122,8 +125,14 @@ pub fn configure_integrations(
     let validator_model = require_trimmed("gemini_validator_model", gemini_validator_model)?;
     let clue_model = require_trimmed("gemini_clue_generator_model", gemini_clue_generator_model)?;
     let villain_model = require_trimmed("gemini_villain_model", gemini_villain_model)?;
+    let terminal_model = normalize_terminal_gemini_model_name(Some(&validator_model));
 
     let relay_base_url = normalize_optional(local_llm_relay_base_url);
+    let armoriq_token_issue_url = if relay_base_url.is_some() {
+        None
+    } else {
+        derive_armoriq_token_issue_url(&verify_url)
+    };
     let gemini_base = if relay_base_url.is_some() {
         normalize_optional(Some(gemini_api_base_url)).unwrap_or_default()
     } else {
@@ -149,7 +158,10 @@ pub fn configure_integrations(
             gemini_clue_generator_model: clue_model,
             gemini_villain_model: villain_model,
             gemini_terminal_api_key: Some(gemini_key),
-            gemini_terminal_model: Some(validator_model),
+            gemini_terminal_model: Some(terminal_model),
+            armoriq_token_issue_url,
+            armoriq_user_id: Some("the-entity-maincloud-user".to_string()),
+            armoriq_agent_id: Some("the-entity-terminal".to_string()),
         },
     );
 
@@ -182,6 +194,9 @@ pub fn configure_local_dev_integrations(
             gemini_villain_model: "gemini-2.5-flash".to_string(),
             gemini_terminal_api_key: None,
             gemini_terminal_model: Some("gemini-2.5-flash".to_string()),
+            armoriq_token_issue_url: None,
+            armoriq_user_id: Some("the-entity-local-user".to_string()),
+            armoriq_agent_id: Some("the-entity-relay".to_string()),
         },
     );
 
@@ -212,8 +227,40 @@ pub fn configure_terminal_gemini(
         "gemini_terminal_api_key",
         gemini_terminal_api_key,
     )?);
-    config.gemini_terminal_model =
-        Some(require_trimmed("gemini_terminal_model", gemini_terminal_model)?);
+    config.gemini_terminal_model = Some(normalize_terminal_gemini_model_name(Some(
+        &require_trimmed("gemini_terminal_model", gemini_terminal_model)?,
+    )));
+    ctx.db.server_config().config_key().update(config);
+    Ok(())
+}
+
+#[spacetimedb::reducer]
+pub fn configure_armoriq_upstream(
+    ctx: &ReducerContext,
+    armoriq_token_issue_url: String,
+    armoriq_user_id: Option<String>,
+    armoriq_agent_id: Option<String>,
+) -> Result<(), String> {
+    ensure_module_owner(ctx)?;
+
+    let mut config = ctx
+        .db
+        .server_config()
+        .config_key()
+        .find(ACTIVE_SERVER_CONFIG_KEY)
+        .ok_or_else(|| {
+            format!(
+                "ServerConfig row {} is missing; configure integrations first",
+                ACTIVE_SERVER_CONFIG_KEY
+            )
+        })?;
+
+    config.armoriq_token_issue_url = Some(require_trimmed(
+        "armoriq_token_issue_url",
+        armoriq_token_issue_url,
+    )?);
+    config.armoriq_user_id = normalize_optional(armoriq_user_id);
+    config.armoriq_agent_id = normalize_optional(armoriq_agent_id);
     ctx.db.server_config().config_key().update(config);
     Ok(())
 }
@@ -254,6 +301,10 @@ pub fn _armoriq_callback(
         );
         return Ok(());
     };
+
+    if enforce_timer_before_request_progress(ctx, &mut game_state, &mut request).is_err() {
+        return Ok(());
+    }
 
     if let Some(transport_error) = callback.transport_error.clone() {
         request.armoriq_raw_response = Some(transport_error.clone());
@@ -319,7 +370,7 @@ pub fn _armoriq_callback(
         return Ok(());
     }
 
-    let parsed: ArmorIqResponse = match serde_json::from_str(&callback.response_body) {
+    let parsed: ArmorIqResponse = match parse_armoriq_response(&callback.response_body) {
         Ok(value) => value,
         Err(err) => {
             request.armoriq_raw_response = Some(callback.response_body.clone());
@@ -465,6 +516,10 @@ pub fn _gemini_validator_callback(
         return Ok(());
     };
 
+    if enforce_timer_before_request_progress(ctx, &mut game_state, &mut request).is_err() {
+        return Ok(());
+    }
+
     if let Some(transport_error) = callback.transport_error.clone() {
         request.gemini_raw_response = Some(transport_error.clone());
         request.phase = TerminalRequestPhase::Failed;
@@ -526,6 +581,58 @@ pub fn _gemini_validator_callback(
         }) {
         Ok(value) => value,
         Err(err) => {
+            let already_retried_malformed_json = request
+                .validator_reason
+                .as_deref()
+                .is_some_and(|reason| reason.starts_with(MALFORMED_GEMINI_TERMINAL_RETRY_MARKER));
+
+            if !already_retried_malformed_json {
+                request.gemini_raw_response = Some(callback.response_body.clone());
+                request.phase = TerminalRequestPhase::PendingGeminiValidator;
+                request.validator_success = None;
+                request.validator_reason = Some(format!(
+                    "{MALFORMED_GEMINI_TERMINAL_RETRY_MARKER}: {err}"
+                ));
+                request.updated_at = ctx.timestamp;
+                ctx.db.terminal_request().request_id().update(request.clone());
+
+                game_state.is_processing_terminal = true;
+                game_state.active_terminal_request = Some(request.request_id);
+                game_state.terminal_status = TerminalStatus::PendingGeminiValidator;
+                game_state.last_terminal_result = None;
+                game_state.last_terminal_message =
+                    Some("Gemini returned malformed terminal JSON. Retrying once.".to_string());
+                game_state.last_terminal_actor = Some(request.player_identity);
+                game_state.updated_at = ctx.timestamp;
+                ctx.db.game_state().game_id().update(game_state.clone());
+
+                if let Err(queue_err) = queue_gemini_validator(ctx, request.request_id) {
+                    if let Some(mut latest_request) = ctx
+                        .db
+                        .terminal_request()
+                        .request_id()
+                        .find(request.request_id)
+                    {
+                        latest_request.phase = TerminalRequestPhase::Failed;
+                        latest_request.validator_success = Some(false);
+                        latest_request.validator_reason = Some(queue_err.clone());
+                        latest_request.updated_at = ctx.timestamp;
+                        ctx.db.terminal_request().request_id().update(latest_request);
+                    }
+
+                    fail_game_state(
+                        ctx,
+                        &mut game_state,
+                        request.request_id,
+                        request.player_identity,
+                        TerminalStatus::Failed,
+                        false,
+                        queue_err,
+                    );
+                }
+                return Ok(());
+            }
+
             request.gemini_raw_response = Some(callback.response_body.clone());
             request.phase = TerminalRequestPhase::Failed;
             request.validator_success = Some(false);
@@ -603,6 +710,7 @@ pub fn _gemini_validator_callback(
     game_state.revealed_clue_count = round_state.next_clue_index.min(clue_count);
     game_state.terminal_strikes = round_state.strikes;
     game_state.terminal_max_strikes = round_state.max_strikes;
+    refresh_timer_snapshot(&mut game_state, timestamp_millis(ctx.timestamp));
     game_state.updated_at = ctx.timestamp;
 
     if spoke_kill_phrase {
@@ -648,6 +756,7 @@ fn configure_terminal_round_for_game(
     setup_payload_json: String,
     allow_legacy_create: bool,
 ) -> Result<(), String> {
+    ensure_runtime_terminal_gemini_config(ctx);
     let setup = normalize_terminal_round_setup(setup_payload_json)?;
     let boot_message = build_round_boot_message(&setup);
     let boot_history = vec![TerminalConversationMessage {
@@ -693,6 +802,7 @@ fn configure_terminal_round_for_game(
     } else {
         load_game_state(ctx, game_id)?
     };
+    enforce_timer_before_player_action(ctx, &mut game_state)?;
     game_state.active_round_key = Some(setup.round_key.clone());
     game_state.active_persona_name = Some(setup.persona_name.clone());
     game_state.is_processing_terminal = false;
@@ -704,6 +814,7 @@ fn configure_terminal_round_for_game(
     if setup.round_key == "round_1" {
         game_state.completed_rounds = 0;
     }
+    refresh_timer_snapshot(&mut game_state, timestamp_millis(ctx.timestamp));
     game_state.revealed_clue_count = 0;
     game_state.last_terminal_result = None;
     game_state.last_terminal_message = Some(boot_message.clone());
@@ -731,8 +842,10 @@ fn submit_terminal_for_game(
     } else {
         load_game_state(ctx, game_id)?
     };
+    enforce_timer_before_player_action(ctx, &mut game_state)?;
     bind_or_authorize_player_one(ctx.sender(), &mut game_state)?;
     repair_stale_lock_if_needed(ctx, &mut game_state);
+    enforce_timer_before_player_action(ctx, &mut game_state)?;
 
     if game_state.is_processing_terminal {
         return Err("terminal validation is already in progress".to_string());
@@ -811,6 +924,7 @@ fn submit_terminal_for_game(
         round_state.persona_name
     ));
     game_state.last_terminal_actor = Some(ctx.sender());
+    refresh_timer_snapshot(&mut game_state, timestamp_millis(ctx.timestamp));
     game_state.updated_at = ctx.timestamp;
     ctx.db.game_state().game_id().update(game_state);
 
@@ -847,6 +961,12 @@ fn load_or_create_game_state(ctx: &ReducerContext) -> GameState {
         last_terminal_reply: None,
         last_terminal_actor: None,
         updated_at: ctx.timestamp,
+        timer_started_at_ms: None,
+        timer_deadline_at_ms: None,
+        timer_duration_ms: crate::tables::state::GAME_TIME_LIMIT_MS,
+        timer_remaining_ms: None,
+        is_game_disqualified: false,
+        disqualified_at_ms: None,
     })
 }
 
@@ -901,6 +1021,7 @@ fn fail_game_state(
     state.last_terminal_message = Some(message);
     state.last_terminal_reply = None;
     state.last_terminal_actor = Some(actor);
+    refresh_timer_snapshot(state, timestamp_millis(ctx.timestamp));
     state.updated_at = ctx.timestamp;
     ctx.db.game_state().game_id().update(state.clone());
 }
@@ -914,6 +1035,7 @@ fn clear_state_for_unknown_request(ctx: &ReducerContext, request_id: u64, messag
             state.last_terminal_result = Some(false);
             state.last_terminal_message = Some(message.clone());
             state.last_terminal_reply = None;
+            refresh_timer_snapshot(&mut state, timestamp_millis(ctx.timestamp));
             state.updated_at = ctx.timestamp;
             ctx.db.game_state().game_id().update(state);
         }
@@ -1060,6 +1182,7 @@ fn register_forbidden_word_penalty(
     });
     game_state.last_terminal_reply = Some(terminal_reply);
     game_state.last_terminal_actor = Some(request.player_identity);
+    refresh_timer_snapshot(game_state, timestamp_millis(ctx.timestamp));
     game_state.updated_at = ctx.timestamp;
 
     ctx.db
@@ -1128,11 +1251,146 @@ fn normalize_terminal_round_setup(
     Ok(setup)
 }
 
+fn enforce_timer_before_player_action(
+    ctx: &ReducerContext,
+    game_state: &mut GameState,
+) -> Result<(), String> {
+    let now_ms = timestamp_millis(ctx.timestamp);
+    refresh_timer_snapshot(game_state, now_ms);
+
+    if game_state.is_game_disqualified {
+        ctx.db.game_state().game_id().update(game_state.clone());
+        return Err("the game has already been disqualified by the match timer".to_string());
+    }
+
+    if game_state.completed_rounds >= MAX_ROUNDS {
+        ctx.db.game_state().game_id().update(game_state.clone());
+        return Ok(());
+    }
+
+    if game_state
+        .timer_deadline_at_ms
+        .is_some_and(|deadline_ms| now_ms >= deadline_ms)
+    {
+        disqualify_game_due_to_timeout(ctx, game_state);
+        return Err("time limit reached; the players have been disqualified".to_string());
+    }
+
+    Ok(())
+}
+
+fn enforce_timer_before_request_progress(
+    ctx: &ReducerContext,
+    game_state: &mut GameState,
+    request: &mut TerminalRequest,
+) -> Result<(), String> {
+    let now_ms = timestamp_millis(ctx.timestamp);
+    refresh_timer_snapshot(game_state, now_ms);
+
+    if game_state.is_game_disqualified
+        || (game_state.completed_rounds < MAX_ROUNDS
+            && game_state
+                .timer_deadline_at_ms
+                .is_some_and(|deadline_ms| now_ms >= deadline_ms))
+    {
+        request.phase = TerminalRequestPhase::Failed;
+        request.validator_success = Some(false);
+        request.validator_reason =
+            Some("Time limit reached before the terminal turn could complete".to_string());
+        request.updated_at = ctx.timestamp;
+        ctx.db.terminal_request().request_id().update(request.clone());
+
+        disqualify_game_due_to_timeout(ctx, game_state);
+        return Err("time limit reached before the terminal turn could complete".to_string());
+    }
+
+    Ok(())
+}
+
+fn disqualify_game_due_to_timeout(ctx: &ReducerContext, game_state: &mut GameState) {
+    let now_ms = timestamp_millis(ctx.timestamp);
+
+    if let Some(mut room) = ctx
+        .db
+        .game_room()
+        .iter()
+        .find(|room| room.game_id == game_state.game_id)
+    {
+        room.status = RoomStatus::Terminated;
+        room.updated_at = ctx.timestamp;
+        room.terminated_at = Some(ctx.timestamp);
+        ctx.db.game_room().room_id().update(room);
+    }
+
+    game_state.is_processing_terminal = false;
+    game_state.active_terminal_request = None;
+    game_state.terminal_status = TerminalStatus::Failed;
+    game_state.last_terminal_result = Some(false);
+    game_state.last_terminal_message = Some("Time limit reached. Players were disqualified.".to_string());
+    game_state.last_terminal_reply = Some(build_timeout_terminal_reply(game_state));
+    game_state.timer_remaining_ms = Some(0);
+    game_state.is_game_disqualified = true;
+    game_state.disqualified_at_ms = Some(now_ms);
+    game_state.updated_at = ctx.timestamp;
+    ctx.db.game_state().game_id().update(game_state.clone());
+}
+
+fn build_timeout_terminal_reply(game_state: &GameState) -> String {
+    match game_state.active_persona_name.as_deref() {
+        Some(persona) if !persona.trim().is_empty() => format!(
+            "{persona}// signal-collapse :: three minutes burned away. session disqualified."
+        ),
+        _ => "terminal// signal-collapse :: three minutes burned away. session disqualified."
+            .to_string(),
+    }
+}
+
 fn build_round_boot_message(setup: &TerminalRoundSetupPayload) -> String {
+    let opening = build_persona_boot_opening(&setup.persona_name);
+    let round_frame = build_round_boot_frame(&setup.round_key);
+    let stakes = if setup.max_strikes <= 1 {
+        "One mistake and the line goes dead.".to_string()
+    } else {
+        format!(
+            "{} mistakes and the line goes dead.",
+            setup.max_strikes
+        )
+    };
+
     format!(
-        "{}// {} :: link established for {}. fragment locked behind static. three strikes and the signal dies. make me say it if you can.",
-        setup.persona_name, setup.glitch_tone, setup.round_key
+        "{}// {} :: {} {} {} Fragment locked behind static. Make me say it if you can.",
+        setup.persona_name, setup.glitch_tone, opening, round_frame, stakes
     )
+}
+
+fn build_persona_boot_opening(persona_name: &str) -> String {
+    let normalized = persona_name.to_ascii_lowercase();
+
+    if normalized.contains("detective") {
+        "You finally got through to my desk.".to_string()
+    } else if normalized.contains("cowboy") || normalized.contains("gunslinger") {
+        "Well now, somebody finally rode up to the wire.".to_string()
+    } else if normalized.contains("robot") || normalized.contains("android") {
+        "Signal acquired. Persona shell active.".to_string()
+    } else if normalized.contains("scientist") || normalized.contains("doctor") {
+        "Connection stabilized. I will tolerate precise questions.".to_string()
+    } else if normalized.contains("priest") || normalized.contains("nun") || normalized.contains("bishop") {
+        "The signal opened like a confession booth.".to_string()
+    } else if normalized.contains("captain") || normalized.contains("admiral") {
+        "Channel secured. Speak with discipline.".to_string()
+    } else {
+        format!("{persona_name} is listening now.")
+    }
+}
+
+fn build_round_boot_frame(round_key: &str) -> &'static str {
+    match round_key {
+        "round_1" => "The first riddle is already pacing in the dark.",
+        "round_2" => "The dead left evidence, and the evidence hates cowards.",
+        "round_3" => "The text is wrong on purpose, and it knows you are reading it.",
+        "round_4" => "Final calibration is live. The next wrong step will sound loud.",
+        _ => "The signal is unstable, but the game has begun.",
+    }
 }
 
 fn build_round_victory_message(round_key: &str, completed_rounds: u32) -> String {
@@ -1286,4 +1544,150 @@ fn normalize_optional(value: Option<String>) -> Option<String> {
 
 fn normalize_dev_api_key(value: String) -> String {
     normalize_optional(Some(value)).unwrap_or_else(|| "dev-armoriq-key".to_string())
+}
+
+fn ensure_runtime_terminal_gemini_config(ctx: &ReducerContext) {
+    let Some(mut config) = ctx
+        .db
+        .server_config()
+        .config_key()
+        .find(ACTIVE_SERVER_CONFIG_KEY)
+    else {
+        return;
+    };
+
+    let mut changed = false;
+
+    if config
+        .gemini_terminal_api_key
+        .as_deref()
+        .map(str::trim)
+        .is_none_or(str::is_empty)
+        && !config.gemini_api_key.trim().is_empty()
+    {
+        config.gemini_terminal_api_key = Some(config.gemini_api_key.trim().to_string());
+        changed = true;
+    }
+
+    let normalized_terminal_model = normalize_terminal_gemini_model_name(
+        config
+            .gemini_terminal_model
+            .as_deref()
+            .or(Some(config.gemini_validator_model.as_str())),
+    );
+
+    if config
+        .gemini_terminal_model
+        .as_deref()
+        .map(str::trim)
+        != Some(normalized_terminal_model.as_str())
+    {
+        config.gemini_terminal_model = Some(normalized_terminal_model);
+        changed = true;
+    }
+
+    if changed {
+        ctx.db.server_config().config_key().update(config);
+    }
+}
+
+fn normalize_terminal_gemini_model_name(model: Option<&str>) -> String {
+    let candidate = model
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("gemini-2.5-flash")
+        .trim_start_matches("models/")
+        .to_string();
+
+    let lowered = candidate.to_ascii_lowercase();
+    if lowered.starts_with("gemini-3.0") {
+        "gemini-2.5-flash".to_string()
+    } else {
+        candidate
+    }
+}
+
+fn derive_armoriq_token_issue_url(verify_url: &str) -> Option<String> {
+    let trimmed = verify_url.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    if trimmed.ends_with("/token/issue") {
+        return Some(trimmed.to_string());
+    }
+
+    if let Some((base, _)) = trimmed.split_once("/verify") {
+        return Some(format!("{}/token/issue", base.trim_end_matches('/')));
+    }
+
+    Some(format!("{}/token/issue", trimmed.trim_end_matches('/')))
+}
+
+fn parse_armoriq_response(body: &str) -> Result<ArmorIqResponse, String> {
+    if let Ok(parsed) = serde_json::from_str::<ArmorIqResponse>(body) {
+        return Ok(parsed);
+    }
+
+    let value: serde_json::Value = serde_json::from_str(body)
+        .map_err(|err| format!("Invalid ArmorIQ JSON: {err}"))?;
+
+    if matches!(
+        value.get("success").and_then(serde_json::Value::as_bool),
+        Some(false)
+    ) {
+        let reason = value
+            .get("message")
+            .or_else(|| value.get("error"))
+            .or_else(|| value.get("detail"))
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToString::to_string)
+            .or_else(|| Some("ArmorIQ rejected the token issuance request".to_string()));
+
+        return Ok(ArmorIqResponse {
+            allowed: false,
+            block_reason: reason,
+        });
+    }
+
+    if armoriq_token_present(&value)
+        || matches!(
+            value.get("success").and_then(serde_json::Value::as_bool),
+            Some(true)
+        )
+    {
+        return Ok(ArmorIqResponse {
+            allowed: true,
+            block_reason: None,
+        });
+    }
+
+    Err("ArmorIQ response did not match either the allow/block contract or the token-issue envelope"
+        .to_string())
+}
+
+fn armoriq_token_present(value: &serde_json::Value) -> bool {
+    const TOKEN_KEYS: [&str; 5] = [
+        "token",
+        "access_token",
+        "intent_token",
+        "bearer_token",
+        "jwt",
+    ];
+
+    if TOKEN_KEYS.iter().any(|key| value.get(key).is_some()) {
+        return true;
+    }
+
+    for parent in ["data", "result"] {
+        if let Some(nested) = value.get(parent) {
+            if TOKEN_KEYS.iter().any(|key| nested.get(key).is_some()) {
+                return true;
+            }
+        }
+    }
+
+    value.get("intent_reference").is_some()
 }

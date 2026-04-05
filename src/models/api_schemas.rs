@@ -23,6 +23,45 @@ pub struct ArmorIqResponse {
     pub block_reason: Option<String>,
 }
 
+/// Upstream ArmorIQ token-issue request used for live intent authorization.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ArmorIqTokenIssueRequest {
+    pub user_id: String,
+    pub agent_id: String,
+    pub action: String,
+    pub plan: ArmorIqTokenIssuePlan,
+    pub policy: ArmorIqTokenIssuePolicy,
+}
+
+/// Execution plan sent to ArmorIQ for intent-token issuance.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ArmorIqTokenIssuePlan {
+    pub goal: String,
+    pub steps: Vec<ArmorIqTokenIssueStep>,
+}
+
+/// A single planned terminal action within the ArmorIQ token-issue request.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ArmorIqTokenIssueStep {
+    pub action: String,
+    pub mcp: String,
+    pub params: ArmorIqTerminalStepParams,
+}
+
+/// Parameter payload for the terminal validation step.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ArmorIqTerminalStepParams {
+    pub player_input: String,
+    pub hidden_answer: String,
+}
+
+/// Policy hints provided alongside the ArmorIQ token-issue request.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ArmorIqTokenIssuePolicy {
+    pub allow: Vec<String>,
+    pub deny: Vec<String>,
+}
+
 /// Exact structured JSON object expected from the round 1 clue-generation Gemini agent.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GeminiRoundOneClueGeneratorResponse {

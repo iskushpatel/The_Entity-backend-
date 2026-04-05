@@ -1,8 +1,11 @@
-use spacetimedb::{Identity, ProcedureContext, ReducerContext, SpacetimeType, Table};
+use std::time::Duration;
+
+use spacetimedb::{Identity, ProcedureContext, ReducerContext, SpacetimeType, Table, Timestamp};
 
 use crate::tables::state::{
-    game_room, game_secret, game_state, room_sequence, room_ticket, GameRoom, GameSecret,
-    GameState, RoomSequence, RoomStatus, RoomTicket, TerminalStatus, ROOM_GAME_ID_OFFSET,
+    game_room, game_secret, game_state, game_timeout_schedule, room_sequence, room_ticket,
+    GameRoom, GameSecret, GameState, GameTimeoutSchedule, RoomSequence, RoomStatus, RoomTicket,
+    TerminalStatus, GAME_TIME_LIMIT_MS, ROOM_GAME_ID_OFFSET,
 };
 
 /// Creates a new multiplayer room and allocates a dedicated game-state row for it.
@@ -40,6 +43,12 @@ pub fn initiate_room(ctx: &ReducerContext, villain_name: Option<String>) -> Resu
         last_terminal_reply: None,
         last_terminal_actor: Some(ctx.sender()),
         updated_at: ctx.timestamp,
+        timer_started_at_ms: None,
+        timer_deadline_at_ms: None,
+        timer_duration_ms: GAME_TIME_LIMIT_MS,
+        timer_remaining_ms: None,
+        is_game_disqualified: false,
+        disqualified_at_ms: None,
     });
 
     ctx.db.game_secret().insert(GameSecret {
@@ -57,6 +66,9 @@ pub fn initiate_room(ctx: &ReducerContext, villain_name: Option<String>) -> Resu
         status: RoomStatus::WaitingForPlayers,
         created_at: ctx.timestamp,
         updated_at: ctx.timestamp,
+        timer_started_at_ms: None,
+        timer_deadline_at_ms: None,
+        timer_duration_ms: GAME_TIME_LIMIT_MS,
         terminated_at: None,
     });
 
@@ -79,7 +91,7 @@ pub fn join_room(ctx: &ReducerContext, room_id: String) -> Result<(), String> {
     let mut room = load_room(ctx, &normalized_room_id)?;
 
     if room.status == RoomStatus::Terminated {
-        return Err(format!("room {} has already been terminated", room.room_id));
+        return Err(format!("room {} is no longer active", room.room_id));
     }
 
     if room.player_one == Some(ctx.sender()) || room.player_two == Some(ctx.sender()) {
@@ -94,16 +106,26 @@ pub fn join_room(ctx: &ReducerContext, room_id: String) -> Result<(), String> {
     room.player_two = Some(ctx.sender());
     room.status = RoomStatus::Ready;
     room.updated_at = ctx.timestamp;
-    ctx.db.game_room().room_id().update(room.clone());
 
     let mut game_state = load_game_state(ctx, room.game_id)?;
     game_state.player_one = room.player_one;
     game_state.player_two = room.player_two;
-    game_state.last_terminal_message = Some("Player 2 joined the room".to_string());
+    start_room_countdown(ctx, &mut room, &mut game_state)?;
+    game_state.last_terminal_message = Some(format!(
+        "Player 2 joined the room. Countdown started: {} ms remaining.",
+        GAME_TIME_LIMIT_MS
+    ));
     game_state.last_terminal_actor = Some(ctx.sender());
     game_state.updated_at = ctx.timestamp;
+    ctx.db.game_room().room_id().update(room.clone());
     ctx.db.game_state().game_id().update(game_state);
 
+    upsert_room_ticket(
+        ctx,
+        room.host_identity,
+        Some(room.room_id.clone()),
+        Some(RoomStatus::Ready),
+    );
     upsert_room_ticket(
         ctx,
         ctx.sender(),
@@ -142,6 +164,7 @@ pub fn terminate_room(ctx: &ReducerContext, room_id: String) -> Result<(), Strin
     game_state.last_terminal_message = Some("Room terminated by host".to_string());
     game_state.last_terminal_actor = Some(ctx.sender());
     game_state.terminal_status = TerminalStatus::Failed;
+    refresh_timer_snapshot(&mut game_state, timestamp_millis(ctx.timestamp));
     game_state.updated_at = ctx.timestamp;
     ctx.db.game_state().game_id().update(game_state);
 
@@ -179,6 +202,7 @@ pub fn terminate_room_for_testing(ctx: &ReducerContext, room_id: String) -> Resu
     game_state.last_terminal_message = Some("Room terminated in testing mode".to_string());
     game_state.last_terminal_actor = Some(ctx.sender());
     game_state.terminal_status = TerminalStatus::Failed;
+    refresh_timer_snapshot(&mut game_state, timestamp_millis(ctx.timestamp));
     game_state.updated_at = ctx.timestamp;
     ctx.db.game_state().game_id().update(game_state);
 
@@ -187,6 +211,60 @@ pub fn terminate_room_for_testing(ctx: &ReducerContext, room_id: String) -> Resu
         ctx.sender(),
         Some(room.room_id),
         Some(RoomStatus::Terminated),
+    );
+    Ok(())
+}
+
+/// Internal timeout callback that disqualifies the room when the three-minute limit expires.
+#[spacetimedb::reducer]
+pub fn _game_timeout_callback(
+    ctx: &ReducerContext,
+    job: GameTimeoutSchedule,
+) -> Result<(), String> {
+    if !ctx.sender_auth().is_internal() {
+        return Err("_game_timeout_callback may only be invoked by the scheduler".to_string());
+    }
+
+    ctx.db
+        .game_timeout_schedule()
+        .scheduled_id()
+        .delete(&job.scheduled_id);
+
+    let Some(mut room) = ctx.db.game_room().room_id().find(job.room_id.clone()) else {
+        return Ok(());
+    };
+
+    if room.status != RoomStatus::Ready {
+        return Ok(());
+    }
+
+    let Some(mut state) = ctx.db.game_state().game_id().find(room.game_id) else {
+        return Ok(());
+    };
+
+    let now_ms = timestamp_millis(ctx.timestamp);
+    refresh_timer_snapshot(&mut state, now_ms);
+
+    if state.completed_rounds >= 4 {
+        ctx.db.game_state().game_id().update(state);
+        return Ok(());
+    }
+
+    let Some(deadline_ms) = state.timer_deadline_at_ms else {
+        ctx.db.game_state().game_id().update(state);
+        return Ok(());
+    };
+
+    if now_ms < deadline_ms {
+        ctx.db.game_state().game_id().update(state);
+        return Ok(());
+    }
+
+    disqualify_room_and_state(
+        ctx,
+        &mut room,
+        &mut state,
+        "Time limit reached. Players were disqualified.".to_string(),
     );
     Ok(())
 }
@@ -233,6 +311,14 @@ pub fn load_room(ctx: &ReducerContext, room_id: &str) -> Result<GameRoom, String
 pub fn resolve_room_game_id(ctx: &ReducerContext, room_id: &str) -> Result<u64, String> {
     let room = load_room(ctx, room_id)?;
     if room.status == RoomStatus::Terminated {
+        if let Some(state) = ctx.db.game_state().game_id().find(room.game_id) {
+            if state.is_game_disqualified {
+                return Err(format!(
+                    "room {} has already been disqualified by the match timer",
+                    room.room_id
+                ));
+            }
+        }
         return Err(format!("room {} has already been terminated", room.room_id));
     }
     Ok(room.game_id)
@@ -259,6 +345,104 @@ fn normalize_villain_name(villain_name: Option<String>) -> String {
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
         .unwrap_or_else(|| "AI Villain".to_string())
+}
+
+fn start_room_countdown(
+    ctx: &ReducerContext,
+    room: &mut GameRoom,
+    game_state: &mut GameState,
+) -> Result<(), String> {
+    let started_at = ctx.timestamp;
+    let deadline_at = started_at + Duration::from_millis(GAME_TIME_LIMIT_MS as u64);
+    let started_at_ms = timestamp_millis(started_at);
+    let deadline_at_ms = timestamp_millis(deadline_at);
+
+    room.timer_started_at_ms = Some(started_at_ms);
+    room.timer_deadline_at_ms = Some(deadline_at_ms);
+    room.timer_duration_ms = GAME_TIME_LIMIT_MS;
+
+    game_state.timer_started_at_ms = Some(started_at_ms);
+    game_state.timer_deadline_at_ms = Some(deadline_at_ms);
+    game_state.timer_duration_ms = GAME_TIME_LIMIT_MS;
+    game_state.timer_remaining_ms = Some(GAME_TIME_LIMIT_MS);
+    game_state.is_game_disqualified = false;
+    game_state.disqualified_at_ms = None;
+
+    queue_room_timeout(ctx, &room.room_id, deadline_at)?;
+    Ok(())
+}
+
+fn queue_room_timeout(
+    ctx: &ReducerContext,
+    room_id: &str,
+    deadline_at: Timestamp,
+) -> Result<(), String> {
+    ctx.db.game_timeout_schedule().insert(GameTimeoutSchedule {
+        scheduled_id: 0,
+        scheduled_at: deadline_at.into(),
+        room_id: room_id.to_string(),
+    });
+    Ok(())
+}
+
+fn disqualify_room_and_state(
+    ctx: &ReducerContext,
+    room: &mut GameRoom,
+    game_state: &mut GameState,
+    message: String,
+) {
+    room.status = RoomStatus::Terminated;
+    room.updated_at = ctx.timestamp;
+    room.terminated_at = Some(ctx.timestamp);
+    ctx.db.game_room().room_id().update(room.clone());
+
+    upsert_room_ticket(
+        ctx,
+        room.host_identity,
+        Some(room.room_id.clone()),
+        Some(RoomStatus::Terminated),
+    );
+    if let Some(player_two) = room.player_two {
+        upsert_room_ticket(
+            ctx,
+            player_two,
+            Some(room.room_id.clone()),
+            Some(RoomStatus::Terminated),
+        );
+    }
+
+    let now_ms = timestamp_millis(ctx.timestamp);
+    game_state.is_processing_terminal = false;
+    game_state.active_terminal_request = None;
+    game_state.terminal_status = TerminalStatus::Failed;
+    game_state.last_terminal_result = Some(false);
+    game_state.last_terminal_message = Some(message.clone());
+    game_state.last_terminal_reply = Some(build_timeout_terminal_reply(game_state));
+    game_state.updated_at = ctx.timestamp;
+    game_state.timer_remaining_ms = Some(0);
+    game_state.is_game_disqualified = true;
+    game_state.disqualified_at_ms = Some(now_ms);
+    ctx.db.game_state().game_id().update(game_state.clone());
+}
+
+fn build_timeout_terminal_reply(game_state: &GameState) -> String {
+    match game_state.active_persona_name.as_deref() {
+        Some(persona) if !persona.trim().is_empty() => format!(
+            "{persona}// signal-collapse :: three minutes burned away. session disqualified."
+        ),
+        _ => "terminal// signal-collapse :: three minutes burned away. session disqualified."
+            .to_string(),
+    }
+}
+
+pub(crate) fn refresh_timer_snapshot(game_state: &mut GameState, now_ms: i64) {
+    game_state.timer_remaining_ms = game_state
+        .timer_deadline_at_ms
+        .map(|deadline_ms| (deadline_ms - now_ms).max(0));
+}
+
+pub(crate) fn timestamp_millis(timestamp: Timestamp) -> i64 {
+    timestamp.to_micros_since_unix_epoch() / 1_000
 }
 
 fn format_room_id(room_seq: u64) -> String {

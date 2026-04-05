@@ -7,6 +7,7 @@ use crate::api::http_wrappers::{process_armoriq_request, process_gemini_validato
 use crate::reducers::content::{
     _round_content_callback, _villain_speech_callback, _villain_tts_callback,
 };
+use crate::reducers::room::_game_timeout_callback;
 use crate::reducers::terminal::{_armoriq_callback, _gemini_validator_callback};
 
 /// The singleton game row used by the non-room legacy reducers in this scaffold.
@@ -14,6 +15,9 @@ pub const DEFAULT_GAME_ID: u64 = 1;
 
 /// Room-backed games start at a separate range so they never collide with the legacy default row.
 pub const ROOM_GAME_ID_OFFSET: u64 = 10_000;
+
+/// Three-minute match timer, expressed in milliseconds for Android-friendly countdown state.
+pub const GAME_TIME_LIMIT_MS: i64 = 180_000;
 
 /// The singleton configuration row holding secrets and remote endpoint settings.
 pub const ACTIVE_SERVER_CONFIG_KEY: u8 = 1;
@@ -113,6 +117,18 @@ pub struct GameState {
     pub revealed_clue_count: u32,
     #[default(None::<String>)]
     pub last_terminal_reply: Option<String>,
+    #[default(None::<i64>)]
+    pub timer_started_at_ms: Option<i64>,
+    #[default(None::<i64>)]
+    pub timer_deadline_at_ms: Option<i64>,
+    #[default(GAME_TIME_LIMIT_MS)]
+    pub timer_duration_ms: i64,
+    #[default(None::<i64>)]
+    pub timer_remaining_ms: Option<i64>,
+    #[default(false)]
+    pub is_game_disqualified: bool,
+    #[default(None::<i64>)]
+    pub disqualified_at_ms: Option<i64>,
 }
 
 /// Private secrets for a game session, intentionally isolated from the public state row.
@@ -150,6 +166,12 @@ pub struct GameRoom {
     pub created_at: Timestamp,
     pub updated_at: Timestamp,
     pub terminated_at: Option<Timestamp>,
+    #[default(None::<i64>)]
+    pub timer_started_at_ms: Option<i64>,
+    #[default(None::<i64>)]
+    pub timer_deadline_at_ms: Option<i64>,
+    #[default(GAME_TIME_LIMIT_MS)]
+    pub timer_duration_ms: i64,
 }
 
 /// Per-player room lifecycle receipt so clients can observe the latest room action they triggered.
@@ -192,6 +214,12 @@ pub struct ServerConfig {
     pub gemini_terminal_api_key: Option<String>,
     #[default(None::<String>)]
     pub gemini_terminal_model: Option<String>,
+    #[default(None::<String>)]
+    pub armoriq_token_issue_url: Option<String>,
+    #[default(None::<String>)]
+    pub armoriq_user_id: Option<String>,
+    #[default(None::<String>)]
+    pub armoriq_agent_id: Option<String>,
 }
 
 /// Optional ElevenLabs configuration used when villain speech should also be synthesized to audio.
@@ -528,4 +556,19 @@ pub struct VillainTtsCallbackSchedule {
     pub response_body_base64: String,
     pub mime_type: Option<String>,
     pub transport_error: Option<String>,
+}
+
+/// Queue row that fires exactly when a multiplayer room should be disqualified for timing out.
+#[derive(Debug, Clone)]
+#[spacetimedb::table(
+    accessor = game_timeout_schedule,
+    private,
+    scheduled(_game_timeout_callback)
+)]
+pub struct GameTimeoutSchedule {
+    #[primary_key]
+    #[auto_inc]
+    pub scheduled_id: u64,
+    pub scheduled_at: ScheduleAt,
+    pub room_id: String,
 }

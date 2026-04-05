@@ -80,12 +80,13 @@ fn round_one_clue_schema() -> Value {
         "properties": {
             "clue_id": { "type": "string" },
             "clue_type": { "type": "string" },
-            "clue_text": { "type": "string" },
+            "clue_text": { "type": "string", "minLength": 80 },
             "required_manual_refs": {
                 "type": "array",
+                "minItems": 2,
                 "items": { "type": "string" }
             },
-            "expected_inference": { "type": "string" },
+            "expected_inference": { "type": "string", "minLength": 60 },
             "difficulty": { "type": "string" }
         },
         "required": [
@@ -107,11 +108,13 @@ fn round_one_walkthrough_schema() -> Value {
             "clue_id": { "type": "string" },
             "manual_refs_used": {
                 "type": "array",
+                "minItems": 2,
                 "items": { "type": "string" }
             },
-            "deduction": { "type": "string" }
+            "deduction": { "type": "string", "minLength": 140 },
+            "phrase_progression": { "type": "string", "minLength": 90 }
         },
-        "required": ["step_id", "clue_id", "manual_refs_used", "deduction"]
+        "required": ["step_id", "clue_id", "manual_refs_used", "deduction", "phrase_progression"]
     })
 }
 
@@ -120,9 +123,16 @@ fn round_one_solution_schema() -> Value {
         "type": "object",
         "properties": {
             "final_identity_guess": { "type": "string" },
-            "final_target_word_inference": { "type": "string" }
+            "final_target_word_inference": { "type": "string" },
+            "why_target_word_fits": { "type": "string", "minLength": 120 },
+            "how_manual_reveals_word": { "type": "string", "minLength": 140 }
         },
-        "required": ["final_identity_guess", "final_target_word_inference"]
+        "required": [
+            "final_identity_guess",
+            "final_target_word_inference",
+            "why_target_word_fits",
+            "how_manual_reveals_word"
+        ]
     })
 }
 
@@ -132,9 +142,43 @@ fn round_one_manual_section_blueprint_schema(id_key: &str) -> Value {
         "properties": {
             id_key: { "type": "string" },
             "title": { "type": "string" },
-            "purpose": { "type": "string" }
+            "purpose": { "type": "string", "minLength": 30 },
+            "linked_clue_ids": {
+                "type": "array",
+                "minItems": 1,
+                "items": { "type": "string" }
+            },
+            "hidden_phrase_function": { "type": "string", "minLength": 40 }
         },
-        "required": [id_key, "title", "purpose"]
+        "required": [id_key, "title", "purpose", "linked_clue_ids", "hidden_phrase_function"]
+    })
+}
+
+fn round_one_signal_thread_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "thread_id": { "type": "string" },
+            "linked_clue_ids": {
+                "type": "array",
+                "minItems": 1,
+                "items": { "type": "string" }
+            },
+            "manual_refs": {
+                "type": "array",
+                "minItems": 2,
+                "items": { "type": "string" }
+            },
+            "hidden_phrase_signal": { "type": "string", "minLength": 90 },
+            "narrative_bridge": { "type": "string", "minLength": 140 }
+        },
+        "required": [
+            "thread_id",
+            "linked_clue_ids",
+            "manual_refs",
+            "hidden_phrase_signal",
+            "narrative_bridge"
+        ]
     })
 }
 
@@ -145,49 +189,65 @@ fn round_one_skeleton_response_schema() -> Value {
             "persona_name": { "type": "string" },
             "persona_paragraphs": {
                 "type": "array",
+                "minItems": 2,
                 "items": { "type": "string" }
             },
             "target_word": { "type": "string" },
             "forbidden_words": {
                 "type": "array",
+                "minItems": 5,
                 "items": { "type": "string" }
             },
             "clues": {
                 "type": "array",
+                "minItems": 4,
                 "items": round_one_clue_schema()
             },
             "manual_blueprint": {
                 "type": "object",
                 "properties": {
-                    "overview": { "type": "string" },
+                    "overview": { "type": "string", "minLength": 120 },
+                    "hidden_phrase_bridge": { "type": "string", "minLength": 90 },
                     "codex_entries": {
                         "type": "array",
+                        "minItems": 6,
                         "items": round_one_manual_section_blueprint_schema("entry_id")
                     },
                     "timeline_fragments": {
                         "type": "array",
+                        "minItems": 4,
                         "items": round_one_manual_section_blueprint_schema("fragment_id")
                     },
                     "cipher_legend": {
                         "type": "array",
+                        "minItems": 4,
                         "items": round_one_manual_section_blueprint_schema("cipher_id")
                     },
                     "protocol_matrix": {
                         "type": "array",
+                        "minItems": 5,
                         "items": round_one_manual_section_blueprint_schema("protocol_id")
                     },
                     "false_leads": {
                         "type": "array",
+                        "minItems": 3,
                         "items": round_one_manual_section_blueprint_schema("lead_id")
+                    },
+                    "signal_threads": {
+                        "type": "array",
+                        "minItems": 4,
+                        "items": round_one_manual_section_blueprint_schema("thread_id")
                     }
                 },
                 "required": [
                     "overview",
+                    "hidden_phrase_bridge",
                     "codex_entries",
                     "timeline_fragments",
                     "cipher_legend",
                     "protocol_matrix",
-                    "false_leads"
+                    "false_leads",
+                    "signal_threads"
                 ]
             },
             "solution": round_one_solution_schema()
@@ -208,69 +268,105 @@ fn round_one_manual_schema() -> Value {
     json!({
         "type": "object",
         "properties": {
-            "overview": { "type": "string" },
+            "overview": { "type": "string", "minLength": 260 },
+            "hidden_phrase_bridge": { "type": "string", "minLength": 180 },
+            "section_usage_notes": { "type": "string", "minLength": 160 },
             "codex_entries": {
                 "type": "array",
+                "minItems": 6,
                 "items": {
                     "type": "object",
                     "properties": {
                         "entry_id": { "type": "string" },
                         "domain": { "type": "string" },
                         "term": { "type": "string" },
-                        "content": { "type": "string" },
+                        "content": { "type": "string", "minLength": 320 },
                         "relevance_tags": {
                             "type": "array",
                             "items": { "type": "string" }
-                        }
+                        },
+                        "linked_clue_ids": {
+                            "type": "array",
+                            "minItems": 1,
+                            "items": { "type": "string" }
+                        },
+                        "hidden_phrase_signal": { "type": "string", "minLength": 90 }
                     },
-                    "required": ["entry_id", "domain", "term", "content", "relevance_tags"]
+                    "required": [
+                        "entry_id",
+                        "domain",
+                        "term",
+                        "content",
+                        "relevance_tags",
+                        "linked_clue_ids",
+                        "hidden_phrase_signal"
+                    ]
                 }
             },
             "timeline_fragments": {
                 "type": "array",
+                "minItems": 4,
                 "items": {
                     "type": "object",
                     "properties": {
                         "fragment_id": { "type": "string" },
                         "timestamp_hint": { "type": "string" },
                         "event_summary": { "type": "string" },
-                        "detail_text": { "type": "string" },
+                        "detail_text": { "type": "string", "minLength": 240 },
                         "linked_entities": {
                             "type": "array",
                             "items": { "type": "string" }
-                        }
+                        },
+                        "linked_clue_ids": {
+                            "type": "array",
+                            "minItems": 1,
+                            "items": { "type": "string" }
+                        },
+                        "hidden_phrase_signal": { "type": "string", "minLength": 90 }
                     },
                     "required": [
                         "fragment_id",
                         "timestamp_hint",
                         "event_summary",
                         "detail_text",
-                        "linked_entities"
+                        "linked_entities",
+                        "linked_clue_ids",
+                        "hidden_phrase_signal"
                     ]
                 }
             },
             "cipher_legend": {
                 "type": "array",
+                "minItems": 4,
                 "items": {
                     "type": "object",
                     "properties": {
                         "cipher_id": { "type": "string" },
                         "symbol_or_pattern": { "type": "string" },
                         "decoding_rule": { "type": "string" },
-                        "expanded_note": { "type": "string" },
-                        "example": { "type": "string" }
+                        "expanded_note": { "type": "string", "minLength": 180 },
+                        "example": { "type": "string", "minLength": 80 },
+                        "linked_clue_ids": {
+                            "type": "array",
+                            "minItems": 1,
+                            "items": { "type": "string" }
+                        },
+                        "hidden_phrase_signal": { "type": "string", "minLength": 90 }
                     },
                     "required": [
                         "cipher_id",
                         "symbol_or_pattern",
                         "decoding_rule",
                         "expanded_note",
-                        "example"
+                        "example",
+                        "linked_clue_ids",
+                        "hidden_phrase_signal"
                     ]
                 }
             },
             "protocol_matrix": {
                 "type": "array",
+                "minItems": 5,
                 "items": {
                     "type": "object",
                     "properties": {
@@ -278,43 +374,72 @@ fn round_one_manual_schema() -> Value {
                         "trigger_condition": { "type": "string" },
                         "prescribed_action": { "type": "string" },
                         "hidden_implication": { "type": "string" },
-                        "detail_text": { "type": "string" }
+                        "detail_text": { "type": "string", "minLength": 220 },
+                        "linked_clue_ids": {
+                            "type": "array",
+                            "minItems": 1,
+                            "items": { "type": "string" }
+                        },
+                        "hidden_phrase_signal": { "type": "string", "minLength": 90 }
                     },
                     "required": [
                         "protocol_id",
                         "trigger_condition",
                         "prescribed_action",
                         "hidden_implication",
-                        "detail_text"
+                        "detail_text",
+                        "linked_clue_ids",
+                        "hidden_phrase_signal"
                     ]
                 }
             },
             "false_leads": {
                 "type": "array",
+                "minItems": 3,
                 "items": {
                     "type": "object",
                     "properties": {
                         "lead_id": { "type": "string" },
                         "misleading_claim": { "type": "string" },
                         "why_it_looks_valid": { "type": "string" },
-                        "why_it_is_wrong": { "type": "string" }
+                        "why_it_is_wrong": { "type": "string" },
+                        "misdirects_clue_ids": {
+                            "type": "array",
+                            "minItems": 1,
+                            "items": { "type": "string" }
+                        },
+                        "discarded_by_manual_refs": {
+                            "type": "array",
+                            "minItems": 1,
+                            "items": { "type": "string" }
+                        }
                     },
                     "required": [
                         "lead_id",
                         "misleading_claim",
                         "why_it_looks_valid",
-                        "why_it_is_wrong"
+                        "why_it_is_wrong",
+                        "misdirects_clue_ids",
+                        "discarded_by_manual_refs"
                     ]
                 }
+            },
+            "signal_threads": {
+                "type": "array",
+                "minItems": 4,
+                "items": round_one_signal_thread_schema()
             }
         },
         "required": [
             "overview",
+            "hidden_phrase_bridge",
+            "section_usage_notes",
             "codex_entries",
             "timeline_fragments",
             "cipher_legend",
             "protocol_matrix",
-            "false_leads"
+            "false_leads",
+            "signal_threads"
         ]
     })
 }
@@ -326,6 +451,7 @@ fn round_one_expansion_response_schema() -> Value {
             "manual": round_one_manual_schema(),
             "decoder_walkthrough": {
                 "type": "array",
+                "minItems": 4,
                 "items": round_one_walkthrough_schema()
             }
         },
@@ -340,20 +466,24 @@ fn round_one_final_response_schema() -> Value {
             "persona_name": { "type": "string" },
             "persona_paragraphs": {
                 "type": "array",
+                "minItems": 2,
                 "items": { "type": "string" }
             },
             "target_word": { "type": "string" },
             "forbidden_words": {
                 "type": "array",
+                "minItems": 5,
                 "items": { "type": "string" }
             },
             "clues": {
                 "type": "array",
+                "minItems": 4,
                 "items": round_one_clue_schema()
             },
             "manual": round_one_manual_schema(),
             "decoder_walkthrough": {
                 "type": "array",
+                "minItems": 4,
                 "items": round_one_walkthrough_schema()
             },
             "solution": round_one_solution_schema()
@@ -786,8 +916,8 @@ fn round_generation_temperature(request: &RoundGenerationRequest) -> f32 {
     match request.round_key.as_str() {
         "round_1" => match request.phase {
             RoundGenerationPhase::PendingGeminiSkeleton => 0.65,
-            RoundGenerationPhase::PendingGeminiExpansion => 0.72,
-            _ => 0.72,
+            RoundGenerationPhase::PendingGeminiExpansion => 0.78,
+            _ => 0.78,
         },
         "round_2" => 0.8,
         "round_3" => 0.75,
@@ -799,9 +929,9 @@ fn round_generation_temperature(request: &RoundGenerationRequest) -> f32 {
 fn round_generation_max_output_tokens(request: &RoundGenerationRequest) -> u32 {
     match request.round_key.as_str() {
         "round_1" => match request.phase {
-            RoundGenerationPhase::PendingGeminiSkeleton => 4500,
-            RoundGenerationPhase::PendingGeminiExpansion => 6500,
-            _ => 6500,
+            RoundGenerationPhase::PendingGeminiSkeleton => 5600,
+            RoundGenerationPhase::PendingGeminiExpansion => 8192,
+            _ => 8192,
         },
         "round_2" => 2200,
         "round_3" => 2200,
@@ -896,21 +1026,24 @@ fn build_round_one_skeleton_prompt(payload_value: &Value) -> Result<String, Stri
         "forbidden_words: List exactly 5 words that are the most obvious clues or synonyms for the target_word.",
         "",
         "clues: Generate exactly 4 compact final clue objects now. Each clue must already contain clue_id, clue_type, clue_text, required_manual_refs, expected_inference, and difficulty.",
-        "Each clue_text should be short, concrete, and no longer than 2 sentences.",
+        "Each clue_text should be concrete, atmospheric, and rich enough to feel like a real clue beat rather than a placeholder.",
         "Use stable manual reference ids with these prefixes only: cx_ for codex_entries, tl_ for timeline_fragments, lg_ for cipher_legend, pm_ for protocol_matrix, fl_ for false_leads.",
-        "required_manual_refs must point to ids that will also exist in manual_blueprint.",
+        "required_manual_refs must point to ids that will also exist in manual_blueprint, and every clue should depend on at least 2 manual refs.",
         "",
         "manual_blueprint: Plan the entire manual, but do not write the long descriptive content yet.",
         "manual_blueprint.overview should be a short paragraph explaining the document theme and how distractors obscure the real solution.",
+        "manual_blueprint.hidden_phrase_bridge should explain, without saying the answer verbatim, what kind of idea the full manual is slowly steering the players toward.",
         "manual_blueprint must contain concrete placeholder records for every section with ids, titles, and purposes:",
-        "- codex_entries: exactly 5 records using entry_id",
-        "- timeline_fragments: exactly 3 records using fragment_id",
-        "- cipher_legend: exactly 3 records using cipher_id",
-        "- protocol_matrix: exactly 4 records using protocol_id",
-        "- false_leads: exactly 2 records using lead_id",
-        "Keep each title to a few words and each purpose to one short sentence.",
+        "- codex_entries: exactly 6 records using entry_id",
+        "- timeline_fragments: exactly 4 records using fragment_id",
+        "- cipher_legend: exactly 4 records using cipher_id",
+        "- protocol_matrix: exactly 5 records using protocol_id",
+        "- false_leads: exactly 3 records using lead_id",
+        "- signal_threads: exactly 4 records using thread_id",
+        "Every blueprint record must include title, purpose, linked_clue_ids, and hidden_phrase_function.",
+        "Keep each title to a few words and each purpose to one short sentence, but make the clue linkage and hidden_phrase_function specific.",
         "",
-        "solution: Provide final_identity_guess and final_target_word_inference.",
+        "solution: Provide final_identity_guess, final_target_word_inference, why_target_word_fits, and how_manual_reveals_word.",
         "",
         "Absolute constraints:",
         "1. Do not use the persona_name, target_word, or forbidden_words inside persona_paragraphs.",
@@ -918,6 +1051,7 @@ fn build_round_one_skeleton_prompt(payload_value: &Value) -> Result<String, Stri
         "3. Keep all ids and clue references internally consistent.",
         "4. The later expansion agent will inherit this skeleton as source of truth, so do not leave placeholders vague.",
         "5. Favor compact phrasing over flourish in this phase; the expansion phase handles depth.",
+        "6. The clue chain must make the players depend on the manual to infer the hidden phrase rather than guessing it from theme alone.",
         "",
         "Additional payload JSON:",
         &serde_json::to_string_pretty(payload_value).unwrap_or_else(|_| "{}".to_string()),
@@ -948,28 +1082,35 @@ fn build_round_one_expansion_prompt(payload_value: &Value, skeleton_json: Option
         "Do not rewrite persona_name, persona_paragraphs, target_word, forbidden_words, clues, or solution. The server will merge those from the skeleton phase.",
         "",
         "The manual JSON must preserve these record fields exactly:",
-        "- codex_entries: entry_id, domain, term, content, relevance_tags",
-        "- timeline_fragments: fragment_id, timestamp_hint, event_summary, detail_text, linked_entities",
-        "- cipher_legend: cipher_id, symbol_or_pattern, decoding_rule, expanded_note, example",
-        "- protocol_matrix: protocol_id, trigger_condition, prescribed_action, hidden_implication, detail_text",
-        "- false_leads: lead_id, misleading_claim, why_it_looks_valid, why_it_is_wrong",
-        "- decoder_walkthrough: step_id, clue_id, manual_refs_used, deduction",
+        "- manual top-level: overview, hidden_phrase_bridge, section_usage_notes, codex_entries, timeline_fragments, cipher_legend, protocol_matrix, false_leads, signal_threads",
+        "- codex_entries: entry_id, domain, term, content, relevance_tags, linked_clue_ids, hidden_phrase_signal",
+        "- timeline_fragments: fragment_id, timestamp_hint, event_summary, detail_text, linked_entities, linked_clue_ids, hidden_phrase_signal",
+        "- cipher_legend: cipher_id, symbol_or_pattern, decoding_rule, expanded_note, example, linked_clue_ids, hidden_phrase_signal",
+        "- protocol_matrix: protocol_id, trigger_condition, prescribed_action, hidden_implication, detail_text, linked_clue_ids, hidden_phrase_signal",
+        "- false_leads: lead_id, misleading_claim, why_it_looks_valid, why_it_is_wrong, misdirects_clue_ids, discarded_by_manual_refs",
+        "- signal_threads: thread_id, linked_clue_ids, manual_refs, hidden_phrase_signal, narrative_bridge",
+        "- decoder_walkthrough: step_id, clue_id, manual_refs_used, deduction, phrase_progression",
         "",
         "Manual writing rules:",
         "1. Expand every blueprint record into a full descriptive record using the exact ids from the skeleton.",
-        "2. The manual must feel like a large, in-world reference document with layered detail, not a terse data table.",
-        "3. Hide the useful signal inside plausible but readable distractor material.",
-        "4. codex_entries.content should usually be 1 to 2 substantial paragraphs.",
-        "5. timeline_fragments.detail_text should add rich context beyond the summary in roughly 4 to 6 sentences.",
-        "6. cipher_legend.expanded_note should clearly explain the symbol system in roughly 3 to 5 sentences while still leaving room for interpretation pressure.",
-        "7. protocol_matrix.detail_text should sound operational and specific in roughly 4 to 6 sentences.",
-        "8. false_leads must be convincing enough to slow the players down before they discard them.",
-        "9. decoder_walkthrough must map each clue_id to the exact manual_refs_used and a precise deduction.",
-        "10. Preserve all clue ids and manual ids exactly as provided by the skeleton.",
-        "11. Stay dense and informative, but do not bloat the prose with repetition or extra scenes outside the supplied outline.",
+        "2. The manual must feel like a large, in-world reference dossier with layered detail, not a terse data table.",
+        "3. Hide the useful signal inside plausible but readable distractor material, but never let the important trail become ambiguous.",
+        "4. overview should be 2 to 3 dense paragraphs that explain the dossier tone, stakes, and how evidence has been obscured.",
+        "5. hidden_phrase_bridge should be a dense paragraph that explains the conceptual path toward the hidden phrase without stating it verbatim.",
+        "6. section_usage_notes should tell Player 2 how to use the document under pressure and which section families answer which clue styles.",
+        "7. codex_entries.content should usually be 2 to 3 substantial paragraphs full of concrete details, historical texture, and clue-relevant signal.",
+        "8. timeline_fragments.detail_text should add rich context beyond the summary in roughly 5 to 8 sentences.",
+        "9. cipher_legend.expanded_note should clearly explain the symbol system in roughly 4 to 6 sentences while still fitting the fiction.",
+        "10. protocol_matrix.detail_text should sound operational and specific in roughly 5 to 8 sentences.",
+        "11. false_leads must be convincing enough to slow the players down before they discard them, and the explanation of why they fail should be clear.",
+        "12. signal_threads must explicitly braid clues, manual refs, and hidden-phrase progression together so the final answer feels earned.",
+        "13. decoder_walkthrough must map each clue_id to exact manual_refs_used, a precise deduction, and a phrase_progression note that shows how the hidden answer becomes unavoidable.",
+        "14. Preserve all clue ids and manual ids exactly as provided by the skeleton.",
+        "15. The hidden phrase must never be dropped casually into the manual body. Instead, each hidden_phrase_signal should explain which conceptual fragment of the answer the section supports.",
+        "16. Aim for a genuinely large, descriptive manual. A 2,500 to 4,000 word result is appropriate if the schema supports it.",
         "",
         "Quality target:",
-        "Spend the token budget on depth, specificity, and descriptive texture in the manual. Do not compress the manual into one-line records.",
+        "Spend the token budget on depth, specificity, cross-reference logic, and descriptive texture in the manual. Do not compress the manual into one-line records.",
         "",
         "Additional payload JSON:",
         &serde_json::to_string_pretty(payload_value).unwrap_or_else(|_| "{}".to_string()),

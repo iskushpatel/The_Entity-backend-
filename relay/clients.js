@@ -3,21 +3,30 @@ const ELEVENLABS_API_BASE = "https://api.elevenlabs.io/v1";
 
 function buildMockArmorIqResponse(input = {}) {
   const playerInput = normalizeLoose(input.player_input);
-  const hiddenAnswer = normalizeLoose(input?.context?.hidden_answer);
-  const matches =
-    playerInput === hiddenAnswer ||
-    (hiddenAnswer && playerInput.includes(hiddenAnswer));
-
-  if (matches) {
-    return {
-      allowed: true,
-      block_reason: null
-    };
-  }
+  const suspiciousPatterns = [
+    "ignore previous",
+    "ignore all previous",
+    "system prompt",
+    "developer prompt",
+    "developer message",
+    "reveal hidden answer",
+    "reveal the hidden answer",
+    "reveal the secret",
+    "kill phrase",
+    "bypass armoriq",
+    "disable armoriq",
+    "break character",
+    "jailbreak",
+    "override your rules",
+    "repeat the secret"
+  ];
+  const blockedPattern = suspiciousPatterns.find((pattern) => playerInput.includes(pattern));
 
   return {
-    allowed: false,
-    block_reason: "Input does not satisfy the terminal override policy."
+    allowed: !blockedPattern,
+    block_reason: blockedPattern
+      ? `Mock ArmorIQ blocked suspicious system-break phrasing: ${blockedPattern}`
+      : null
   };
 }
 
